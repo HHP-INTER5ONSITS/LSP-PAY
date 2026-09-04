@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: lsp-pay
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENING_BALANCE
+        value: "10000"
+      - key: SHOW_CODES
+        value: "false"
+      - key: MAIL_FROM
+        value: LSP-Pay <onboarding@resend.dev>
+      - key: RESEND_API_KEY
+        sync: false          # paste your key in the Render dashboard
+      # Uncomment together with the disk block below on a paid plan:
+      # - key: DATA_DIR
+      #   value: /var/data
+    # A free Render service has no persistent disk, so the database resets
+    # on each deploy. On Starter or above, uncomment this to keep data:
+    # disk:
+    #   name: lsp-pay-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
