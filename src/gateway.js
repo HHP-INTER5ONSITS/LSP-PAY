@@ -242,6 +242,34 @@ module.exports = function mountGateway(app, deps) {
     res.json({ ok: true, secret, warning: 'The old secret stopped working. Update your server now.' });
   });
 
+  /**
+   * Creates an order from inside the app, using the owner's session rather
+   * than API credentials. Exists so a merchant can see their own checkout
+   * page without a terminal, a key or a secret.
+   */
+  app.post('/api/merchants/test-order', auth, (req, res) => {
+    const merchant = findMerchant.get(Number(req.body.merchantId), req.user.id);
+    if (!merchant) return fail(res, 404, 'No such gateway on your account.');
+
+    const rupees = Number(req.body.amount);
+    if (!Number.isFinite(rupees) || rupees <= 0 || rupees > 200000)
+      return fail(res, 400, 'Enter an amount between 1 and 200000.');
+
+    const id = orderId();
+    db.prepare(
+      `INSERT INTO orders (id, merchant_id, amount_p, description, reference, expires_at)
+       VALUES (?, ?, ?, ?, 'in-app-test', ?)`
+    ).run(
+      id,
+      merchant.id,
+      paise(rupees),
+      String(req.body.description || 'Test order').slice(0, 140),
+      Date.now() + ORDER_TTL_MS
+    );
+
+    res.json(publicOrder(orderById.get(id), merchant, baseUrlOf(req)));
+  });
+
   app.get('/api/merchants/orders', auth, (req, res) => {
     const merchant = findMerchant.get(Number(req.query.merchantId), req.user.id);
     if (!merchant) return fail(res, 404, 'No such gateway on your account.');

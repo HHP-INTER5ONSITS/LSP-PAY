@@ -727,7 +727,8 @@ async function sheetBusiness() {
     <div class="kv"><span>Checkout theme</span><span>${m.theme === 'light' ? 'Light' : 'Dark'}</span></div>
     <div class="kv"><span>Methods</span><span>${escapeHtml(m.methods.join(', '))}</span></div>
 
-    <button id="settings" class="btn-primary" style="margin-top:20px">Logo, theme and methods</button>
+    <button id="test" class="btn-primary" style="margin-top:20px">Create a test order</button>
+    <button id="settings" class="btn-quiet">Logo, theme and methods</button>
     <button id="roll" class="btn-quiet">Reset API secret</button>
     <button id="docs" class="btn-quiet">API documentation</button>
 
@@ -741,9 +742,52 @@ async function sheetBusiness() {
         </div>`).join('')
       : '<p class="empty">No orders yet. Create one from your server with the API.</p>'}
   `, (root) => {
+    $('#test', root).addEventListener('click', () => sheetTestOrder(m));
     $('#settings', root).addEventListener('click', () => sheetBusinessSettings(m));
     $('#docs', root).addEventListener('click', () => window.open('/developers', '_blank'));
     $('#roll', root).addEventListener('click', () => sheetRollSecret(m));
+  });
+}
+
+function sheetTestOrder(m) {
+  openSheet('Create a test order', `
+    <p class="sheet-note">This is what your website's server would do. It makes a real payment link you can open and pay, without needing your API key.</p>
+    <label class="field"><span>Amount in rupees</span>
+      <input name="amount" type="number" inputmode="decimal" min="1" step="0.01" value="499" /></label>
+    <label class="field"><span>What is it for</span>
+      <input name="description" maxlength="140" value="Test order" /></label>
+    <button id="go" class="btn-primary">Create the link</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        const o = await api('/api/merchants/test-order', { merchantId: m.id, ...readForm(root) });
+        showCheckoutLink(o);
+      } catch (err) {
+        const msg = $('#msg', root);
+        msg.textContent = err.message; msg.hidden = false;
+      }
+    });
+  });
+}
+
+function showCheckoutLink(o) {
+  openSheet('Your payment link', `
+    <div class="summary">
+      <div class="summary-amt">${escapeHtml(o.amountLabel)}</div>
+      <div class="summary-to">${escapeHtml(o.description || '')}</div>
+    </div>
+    <p class="sheet-note">Open this to pay as your customer would. It works for 30 minutes and can only be paid once.</p>
+    <div class="gift-code" style="font-size:13px;word-break:break-all;letter-spacing:0">${escapeHtml(o.checkoutUrl)}</div>
+    <button id="open" class="btn-primary">Open the checkout page</button>
+    <button id="copy" class="btn-quiet">Copy the link</button>
+    <p class="sheet-note" style="margin-top:16px">Pay with UPI using any ID like <strong>buyer@okbank</strong>, or card <strong>4111 1111 1111 1111</strong>. Use <strong>fail@bank</strong> or card <strong>4000 0000 0000 0002</strong> to watch it decline.</p>
+  `, (root) => {
+    $('#open', root).addEventListener('click', () => window.open(o.checkoutUrl, '_blank'));
+    $('#copy', root).addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(o.checkoutUrl); toast('Link copied.'); }
+      catch { toast('Select the link above and copy it.', true); }
+    });
   });
 }
 
