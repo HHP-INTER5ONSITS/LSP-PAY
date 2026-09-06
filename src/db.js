@@ -52,6 +52,24 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id, id DESC);
 
+-- Saved cards. This table deliberately has no column for a card number.
+-- We keep only what is safe to store: the processor's token, the last four
+-- digits, brand and expiry. A leak of this table gives an attacker nothing
+-- they can charge.
+CREATE TABLE IF NOT EXISTS cards (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  token        TEXT NOT NULL,
+  brand        TEXT NOT NULL,
+  last4        TEXT NOT NULL,
+  exp_month    INTEGER NOT NULL,
+  exp_year     INTEGER NOT NULL,
+  label        TEXT,
+  is_default   INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cards_user ON cards(user_id);
+
 CREATE TABLE IF NOT EXISTS gift_cards (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   code           TEXT NOT NULL UNIQUE,

@@ -1,3 +1,5 @@
+/* Dark is the default. The light palette below takes over when the system
+   asks for it, or when the toggle sets data-theme on <html>. */
 :root {
   --ink:    #0E0C1A;
   --panel:  #191627;
@@ -10,9 +12,81 @@
   --mint:   #4FC98D;
   --coral:  #E4674C;
 
+  --btn-face: #D9A441;
+  --btn-text: #241A05;
+  --placeholder: #575072;
+  --glow: rgba(217,164,65,.10);
+  --scrim: rgba(5,4,12,.72);
+  --bad-bg: rgba(228,103,76,.11);
+  --bad-line: rgba(228,103,76,.35);
+  --bad-text: #F4A392;
+  --good-bg: rgba(79,201,141,.10);
+  --good-line: rgba(79,201,141,.32);
+  --good-text: #8FE3BB;
+  --shadow: none;
+
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
   --serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
   --r: 14px;
+}
+
+/* Warm paper, not clinical white — the brass has to still read as brass. */
+:root[data-theme='light'] { color-scheme: light; }
+
+:root[data-theme='light'] {
+  --ink:    #FBF8F1;
+  --panel:  #FFFFFF;
+  --raised: #F4EFE4;
+  --line:   #E3DACA;
+  --brass:  #8A6314;
+  --brass-d:#C9AE79;
+  --ivory:  #1C1830;
+  --mist:   #6E6784;
+  --mint:   #197A4F;
+  --coral:  #B33F27;
+
+  --btn-face: #1C1830;
+  --btn-text: #FBF8F1;
+  --placeholder: #A79E8D;
+  --glow: rgba(217,164,65,.20);
+  --scrim: rgba(28,24,48,.38);
+  --bad-bg: #FCEDE9;
+  --bad-line: #E9BFB3;
+  --bad-text: #94301A;
+  --good-bg: #E8F6EE;
+  --good-line: #B3DCC6;
+  --good-text: #146B45;
+  --shadow: 0 1px 2px rgba(28,24,48,.05);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --ink:    #FBF8F1;
+    --panel:  #FFFFFF;
+    --raised: #F4EFE4;
+    --line:   #E3DACA;
+    --brass:  #8A6314;
+    --brass-d:#C9AE79;
+    --ivory:  #1C1830;
+    --mist:   #6E6784;
+    --mint:   #197A4F;
+    --coral:  #B33F27;
+
+    --btn-face: #1C1830;
+    --btn-text: #FBF8F1;
+    --placeholder: #A79E8D;
+    --glow: rgba(217,164,65,.20);
+    --scrim: rgba(28,24,48,.38);
+    --bad-bg: #FCEDE9;
+    --bad-line: #E9BFB3;
+    --bad-text: #94301A;
+    --good-bg: #E8F6EE;
+    --good-line: #B3DCC6;
+    --good-text: #146B45;
+    --shadow: 0 1px 2px rgba(28,24,48,.05);
+
+    color-scheme: light;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -29,7 +103,7 @@ html, body {
 body {
   min-height: 100dvh;
   background-image:
-    radial-gradient(120% 60% at 50% -10%, rgba(217,164,65,.10), transparent 60%);
+    radial-gradient(120% 60% at 50% -10%, var(--glow), transparent 60%);
 }
 
 button { font: inherit; color: inherit; cursor: pointer; }
@@ -80,6 +154,7 @@ input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid var(--line);
   border-radius: 20px;
   padding: 26px 22px;
+  box-shadow: var(--shadow);
 }
 
 .auth-title {
@@ -120,7 +195,7 @@ input, select, textarea { font: inherit; color: inherit; }
   outline: none;
   transition: border-color .15s ease;
 }
-.field input::placeholder { color: #575072; }
+.field input::placeholder, .field textarea::placeholder { color: var(--placeholder); }
 .field input:focus, .field select:focus, .field textarea:focus {
   border-color: var(--brass);
   box-shadow: 0 0 0 3px rgba(217,164,65,.16);
@@ -139,8 +214,8 @@ input, select, textarea { font: inherit; color: inherit; }
   width: 100%;
   padding: 15px;
   margin-top: 4px;
-  background: var(--brass);
-  color: #241A05;
+  background: var(--btn-face);
+  color: var(--btn-text);
   font-weight: 600;
   border: none;
   border-radius: var(--r);
@@ -178,14 +253,14 @@ input, select, textarea { font: inherit; color: inherit; }
   border-radius: 11px;
   font-size: 14px;
   line-height: 1.5;
-  background: rgba(228,103,76,.11);
-  border: 1px solid rgba(228,103,76,.35);
-  color: #F4A392;
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-line);
+  color: var(--bad-text);
 }
 .msg.good {
-  background: rgba(79,201,141,.10);
-  border-color: rgba(79,201,141,.32);
-  color: #8FE3BB;
+  background: var(--good-bg);
+  border-color: var(--good-line);
+  color: var(--good-text);
 }
 
 /* ────────────────────────────── wallet ───────────────────────────── */
@@ -312,7 +387,7 @@ input, select, textarea { font: inherit; color: inherit; }
 
 .scrim {
   position: fixed; inset: 0;
-  background: rgba(5,4,12,.72);
+  background: var(--scrim);
   backdrop-filter: blur(3px);
   z-index: 40;
 }
@@ -329,6 +404,7 @@ input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid var(--line);
   border-bottom: none;
   border-radius: 22px 22px 0 0;
+  box-shadow: var(--shadow);
   padding: 10px 20px calc(26px + env(safe-area-inset-bottom));
   z-index: 50;
   animation: rise .22s cubic-bezier(.2,.8,.3,1);
@@ -477,4 +553,14 @@ input, select, textarea { font: inherit; color: inherit; }
   font-size: 14px;
   z-index: 60;
 }
-.toast.bad { border-color: rgba(228,103,76,.5); color: #F4A392; }
+.toast.bad { border-color: var(--bad-line); background: var(--bad-bg); color: var(--bad-text); }
+
+/* theme toggle */
+.head-tools { display: flex; gap: 8px; }
+.icon-btn .sun { display: none; }
+:root[data-theme='light'] .icon-btn .moon { display: none; }
+:root[data-theme='light'] .icon-btn .sun { display: block; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) .icon-btn .moon { display: none; }
+  :root:not([data-theme='dark']) .icon-btn .sun { display: block; }
+}

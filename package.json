@@ -1,11 +1,11 @@
 {
   "name": "lsp-pay",
   "version": "1.0.0",
-  "description": "LSP-Pay — a light, real-server payments app in rupees. Email OTP via Resend, PIN-protected payments, recharges, FASTag, gift cards and points.",
+  "description": "LSP-Pay \u2014 a light, real-server payments app in rupees. Email OTP via Resend, PIN-protected payments, recharges, FASTag, gift cards and points.",
   "main": "src/server.js",
   "type": "commonjs",
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "scripts": {
     "start": "node src/server.js",

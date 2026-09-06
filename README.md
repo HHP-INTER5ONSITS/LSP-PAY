@@ -13,7 +13,12 @@ Built to run on a free Render web service with a GitHub repo behind it. Emails g
 | Recharge a mobile number | Prepaid top-up for Airtel, Jio, Vi or BSNL. |
 | Top up FASTag | Toll balance against a tag number and vehicle. |
 | Buy a gift card | ₹500 / ₹1,000 / ₹2,000 / ₹5,000 cards at 8% off. The code is emailed to the recipient, who redeems it into their own balance. |
+| Debit cards | Save up to five cards, add money to your wallet from one, or pick a card at the moment you pay. |
 | Points | 5 points per ₹100 spent, on every one of the flows above. |
+
+**Light and dark.** The app follows your device setting, and the sun/moon button in the header overrides it. Your choice is remembered on that device.
+
+Cards are in **demo mode**: nothing is charged and no bank is contacted. Test with `4111 1111 1111 1111`. Three numbers decline on purpose so you can see the failure paths — `4000 0000 0000 9995` (no funds), `4000 0000 0000 0002` (bank refused), `4000 0000 0000 0069` (expired).
 
 The payment PIN starts at **00000**. Changing it sends a fresh code to your email first.
 
@@ -93,10 +98,13 @@ Without a Resend key the app still works — the sign-in code prints to your ter
 src/server.js   all routes, PIN checks, money movement
 src/db.js       SQLite schema
 src/mail.js     Resend calls and the email templates
+src/cards.js    card validation and the demo tokeniser
 public/         the app itself — plain HTML, CSS and JS, no build step
 ```
 
 Money is stored in **paise as integers**, never floats, so rounding can't leak value. Each payment runs inside a single SQLite transaction: the debit, the credit and the points either all land or none do, and a balance can't go negative partway through.
+
+**No card number is ever stored.** The `cards` table has no column for one. A number is validated, reduced to a brand and last four digits, and discarded — it is never written to disk, never logged, never returned. To go live you replace `tokenise` and `authorise` in `src/cards.js` with real processor calls, and send the card from the browser to the processor directly so it never reaches this server. Storing real card numbers puts you inside PCI DSS and is not something to attempt on a hobby deployment.
 
 PINs and one-time codes are hashed with scrypt and a per-record salt. Codes expire after 10 minutes, die after five wrong guesses, and can't be reused. Five wrong PINs lock payments for 15 minutes. Sessions are signed JWTs in an httpOnly cookie.
 
@@ -108,7 +116,8 @@ PINs and one-time codes are hashed with scrypt and a per-record salt. Codes expi
 | POST | `/api/auth/verify` | exchange the code for a session |
 | GET | `/api/me` | current balance and points |
 | POST | `/api/pin/request-code` · `/api/pin/change` | change the payment PIN |
-| POST | `/api/pay/user` · `/api/pay/provider` | payments |
+| POST | `/api/pay/user` · `/api/pay/provider` | payments, optionally with `cardId` |
+| GET/POST | `/api/cards` · `/default` · `/remove` · `/topup` | the card vault |
 | POST | `/api/recharge/mobile` · `/api/recharge/fastag` | recharges |
 | GET/POST | `/api/giftcards` · `/buy` · `/redeem` | gift cards |
 | GET | `/api/transactions` | last 60 entries |

@@ -173,14 +173,26 @@ function showWallet() {
  * Shows the confirm screen with a keypad, then calls submit(pin).
  * `submit` should return the server response; this handles errors and success.
  */
-function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, onDone }) {
+async function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, onDone }) {
   let pin = '';
+
+  let saved = [];
+  try { saved = (await api('/api/cards')).cards; } catch { /* wallet only */ }
+
+  const sourcePicker = saved.length
+    ? `<label class="field"><span>Pay using</span>
+        <select id="source">
+          <option value="">Wallet · ${escapeHtml(user.balanceLabel)}</option>
+          ${saved.map((c) => `<option value="${c.id}"${c.isDefault ? '' : ''}>${escapeHtml(c.display)}</option>`).join('')}
+        </select></label>`
+    : '';
 
   const html = `
     <div class="summary">
       <div class="summary-amt">${escapeHtml(amountLabel)}</div>
       <div class="summary-to">${escapeHtml(to)}</div>
     </div>
+    ${sourcePicker}
     <p class="sheet-note">Enter your 5-digit payment PIN.</p>
     <div class="pin-dots">${'<span class="pin-dot"></span>'.repeat(5)}</div>
     <div class="keypad">
@@ -225,7 +237,8 @@ function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, onDone }
       go.disabled = true;
       msg.hidden = true;
       try {
-        const out = await submit(pin);
+        const source = $('#source', root);
+        const out = await submit(pin, source && source.value ? Number(source.value) : undefined);
         user = out.user || user;
         paintUser();
         loadHistory();
@@ -279,15 +292,15 @@ function sheetPay() {
       <input name="note" maxlength="80" placeholder="Dinner, rent, cab…" /></label>
     <button id="go" class="btn-primary">Continue</button>
   `, (root) => {
-    $('#go', root).addEventListener('click', () => {
+    $('#go', root).addEventListener('click', async () => {
       const f = readForm(root);
       if (!f.to) return toast('Enter their email address.', true);
       if (!(Number(f.amount) > 0)) return toast('Enter an amount.', true);
 
-      confirmWithPin({
+      await confirmWithPin({
         amountLabel: money(f.amount),
         to: `To ${f.to}`,
-        submit: (pin) => api('/api/pay/user', { ...f, pin }),
+        submit: (pin, cardId) => api('/api/pay/user', { ...f, pin, cardId }),
         onDone: (out) =>
           showSuccess({
             amountLabel: out.amountLabel,
@@ -329,16 +342,16 @@ async function sheetProvider() {
       })
     );
 
-    $('#go', root).addEventListener('click', () => {
+    $('#go', root).addEventListener('click', async () => {
       const f = readForm(root);
       const provider = providers.find((p) => p.code === f.code);
       if (!provider) return toast('That code does not match a provider.', true);
       if (!(Number(f.amount) > 0)) return toast('Enter an amount.', true);
 
-      confirmWithPin({
+      await confirmWithPin({
         amountLabel: money(f.amount),
         to: `To ${provider.name} · ${provider.code}`,
-        submit: (pin) => api('/api/pay/provider', { ...f, pin }),
+        submit: (pin, cardId) => api('/api/pay/provider', { ...f, pin, cardId }),
         onDone: (out) =>
           showSuccess({
             amountLabel: out.amountLabel,
@@ -364,16 +377,16 @@ function sheetMobile() {
     ${amountField('Recharge amount', 10)}
     <button id="go" class="btn-primary">Continue</button>
   `, (root) => {
-    $('#go', root).addEventListener('click', () => {
+    $('#go', root).addEventListener('click', async () => {
       const f = readForm(root);
       if (!/^[6-9]\d{9}$/.test(f.phone)) return toast('Enter a 10-digit mobile number.', true);
       if (!(Number(f.amount) >= 10)) return toast('Minimum recharge is ₹10.', true);
 
-      confirmWithPin({
+      await confirmWithPin({
         amountLabel: money(f.amount),
         to: `${f.operator} · ${f.phone}`,
         actionLabel: 'Recharge',
-        submit: (pin) => api('/api/recharge/mobile', { ...f, pin }),
+        submit: (pin, cardId) => api('/api/recharge/mobile', { ...f, pin, cardId }),
         onDone: (out) =>
           showSuccess({
             amountLabel: out.amountLabel,
@@ -397,16 +410,16 @@ function sheetFastag() {
     ${amountField('Top-up amount', 100)}
     <button id="go" class="btn-primary">Continue</button>
   `, (root) => {
-    $('#go', root).addEventListener('click', () => {
+    $('#go', root).addEventListener('click', async () => {
       const f = readForm(root);
       if (!/^[A-Za-z0-9]{8,20}$/.test(f.tagId || '')) return toast('Enter a FASTag number of 8 to 20 characters.', true);
       if (!(Number(f.amount) >= 100)) return toast('Minimum top-up is ₹100.', true);
 
-      confirmWithPin({
+      await confirmWithPin({
         amountLabel: money(f.amount),
         to: `FASTag ${f.tagId.toUpperCase()}`,
         actionLabel: 'Top up',
-        submit: (pin) => api('/api/recharge/fastag', { ...f, pin }),
+        submit: (pin, cardId) => api('/api/recharge/fastag', { ...f, pin, cardId }),
         onDone: (out) =>
           showSuccess({
             amountLabel: out.amountLabel,
@@ -449,17 +462,17 @@ async function sheetGift() {
 
     $('#redeem', root).addEventListener('click', sheetRedeem);
 
-    $('#go', root).addEventListener('click', () => {
+    $('#go', root).addEventListener('click', async () => {
       const f = readForm(root);
       const picked = faces.find((x) => x.face === face);
       if (!picked) return toast('Pick a card value.', true);
       if (!f.recipient) return toast("Enter the recipient's email address.", true);
 
-      confirmWithPin({
+      await confirmWithPin({
         amountLabel: money(picked.price),
         to: `${picked.faceLabel} card for ${f.recipient}`,
         actionLabel: 'Buy card',
-        submit: (pin) => api('/api/giftcards/buy', { face, ...f, pin }),
+        submit: (pin, cardId) => api('/api/giftcards/buy', { face, ...f, pin, cardId }),
         onDone: (out) =>
           showSuccess({
             amountLabel: out.amountLabel,
@@ -520,6 +533,114 @@ async function sheetRewards() {
   });
 }
 
+/* ──────────────────────────── 7. debit cards ──────────────────────────── */
+
+async function sheetCards() {
+  const { cards: saved } = await api('/api/cards');
+
+  openSheet('Cards and money', `
+    <p class="sheet-note">Add money to your wallet from a card, or pick a card at the moment you pay.</p>
+    ${saved.length
+      ? `<div class="picker">${saved.map((c) => `
+          <div class="pick" style="cursor:default">
+            <span><strong>${escapeHtml(c.display)}</strong><small>Expires ${escapeHtml(c.expiry)}${c.isDefault ? ' · Default' : ''}${c.label ? ' · ' + escapeHtml(c.label) : ''}</small></span>
+            <span style="display:flex;gap:10px">
+              <button class="btn-link" data-topup="${c.id}">Add money</button>
+              <button class="btn-link" data-remove="${c.id}">Remove</button>
+            </span>
+          </div>`).join('')}</div>`
+      : '<p class="empty">No cards saved yet.</p>'}
+    <button id="add" class="btn-primary">Add a debit card</button>
+    <p class="sheet-note" style="margin-top:16px">Demo mode. Cards are not charged and no card number is stored — only the brand, last four digits and expiry.</p>
+  `, (root) => {
+    $('#add', root).addEventListener('click', sheetAddCard);
+
+    root.querySelectorAll('[data-topup]').forEach((b) =>
+      b.addEventListener('click', () => sheetTopUp(saved.find((c) => c.id === Number(b.dataset.topup))))
+    );
+
+    root.querySelectorAll('[data-remove]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        try {
+          await api('/api/cards/remove', { cardId: Number(b.dataset.remove) });
+          toast('Card removed.');
+          sheetCards();
+        } catch (err) { toast(err.message, true); }
+      })
+    );
+  });
+}
+
+function sheetAddCard() {
+  openSheet('Add a debit card', `
+    <label class="field"><span>Card number</span>
+      <input name="number" inputmode="numeric" maxlength="23" placeholder="4111 1111 1111 1111" /></label>
+    <div class="field-row">
+      <label class="field"><span>Expiry</span>
+        <input name="expiry" inputmode="numeric" maxlength="5" placeholder="09/29" /></label>
+      <label class="field"><span>Security code</span>
+        <input name="cvv" inputmode="numeric" maxlength="4" type="password" placeholder="•••" /></label>
+    </div>
+    <label class="field"><span>Nickname (optional)</span>
+      <input name="label" maxlength="24" placeholder="Salary account" /></label>
+    <button id="go" class="btn-primary">Save card</button>
+    <p id="msg" class="msg" hidden></p>
+    <p class="sheet-note" style="margin-top:16px">Demo mode — use a test number like 4111 1111 1111 1111. Never enter a real card. 4000 0000 0000 9995, 4000 0000 0000 0002 and 4000 0000 0000 0069 are set up to decline so you can try the failure paths.</p>
+  `, (root) => {
+    const msg = $('#msg', root);
+
+    // format as the person types
+    const num = root.querySelector('[name=number]');
+    num.addEventListener('input', () => {
+      const d = num.value.replace(/\D/g, '').slice(0, 19);
+      num.value = d.replace(/(.{4})/g, '$1 ').trim();
+    });
+    const exp = root.querySelector('[name=expiry]');
+    exp.addEventListener('input', () => {
+      const d = exp.value.replace(/\D/g, '').slice(0, 4);
+      exp.value = d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
+    });
+
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        await api('/api/cards', readForm(root));
+        closeSheet();
+        toast('Card saved.');
+        sheetCards();
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.hidden = false;
+      }
+    });
+  });
+}
+
+function sheetTopUp(card) {
+  openSheet('Add money', `
+    <p class="sheet-note">From ${escapeHtml(card.display)} into your LSP-Pay balance.</p>
+    ${amountField('Amount in rupees', 100)}
+    <button id="go" class="btn-primary">Continue</button>
+  `, (root) => {
+    $('#go', root).addEventListener('click', () => {
+      const f = readForm(root);
+      if (!(Number(f.amount) >= 100)) return toast('Minimum top-up is ₹100.', true);
+
+      confirmWithPin({
+        amountLabel: money(f.amount),
+        to: `From ${card.display}`,
+        actionLabel: 'Add money',
+        submit: (pin) => api('/api/cards/topup', { cardId: card.id, amount: f.amount, pin }),
+        onDone: (out) =>
+          showSuccess({
+            amountLabel: out.amountLabel,
+            headline: `Added from ${out.card}`,
+            rows: [['Reference', out.reference], ['New balance', user.balanceLabel]]
+          })
+      });
+    });
+  });
+}
+
 /* ───────────────────────────── settings + PIN ─────────────────────────── */
 
 function sheetSettings() {
@@ -574,6 +695,28 @@ function sheetChangePin() {
   });
 }
 
+/* ─────────────────────────────── theming ─────────────────────────────── */
+
+function currentTheme() {
+  const set = document.documentElement.getAttribute('data-theme');
+  if (set) return set;
+  return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
+function toggleTheme() {
+  const next = currentTheme() === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('lsp-theme', next); } catch { /* private mode */ }
+
+  const bar = document.querySelector('meta[name=theme-color]');
+  if (bar) bar.setAttribute('content', next === 'light' ? '#FBF8F1' : '#0E0C1A');
+}
+
+['btn-theme', 'btn-theme-auth'].forEach((id) => {
+  const b = el(id);
+  if (b) b.addEventListener('click', toggleTheme);
+});
+
 /* ──────────────────────────────── wiring ──────────────────────────────── */
 
 const SHEETS = {
@@ -582,7 +725,8 @@ const SHEETS = {
   mobile: sheetMobile,
   fastag: sheetFastag,
   gift: sheetGift,
-  rewards: sheetRewards
+  rewards: sheetRewards,
+  cards: sheetCards
 };
 
 document.querySelectorAll('[data-open]').forEach((b) =>
