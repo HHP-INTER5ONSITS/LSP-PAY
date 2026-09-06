@@ -343,6 +343,14 @@ app.post('/api/auth/verify', codeLimiter, (req, res) => {
 
   const user = findUserByEmail.get(email) || createUser(email);
   setSession(res, user);
+
+  const agent = String(req.get('user-agent') || '').slice(0, 160);
+  const ip = (req.get('x-forwarded-for') || req.ip || '').split(',')[0].trim();
+  db.prepare('INSERT INTO logins (user_id, ip, agent) VALUES (?, ?, ?)').run(user.id, ip, agent);
+
+  const priorCount = db.prepare('SELECT COUNT(*) n FROM logins WHERE user_id = ?').get(user.id).n;
+  if (priorCount > 1) notify(user.id, 'New sign-in', `From ${ip || 'an unknown address'}. If this was not you, change your PIN.`);
+
   res.json({ ok: true, user: publicUser(user) });
 });
 
@@ -433,6 +441,9 @@ app.post('/api/pay/user', auth, payLimiter, async (req, res) => {
     .prepare("SELECT id FROM requests WHERE from_id = ? AND to_id = ? AND status = 'pending' AND amount_p = ? ORDER BY id DESC LIMIT 1")
     .get(payee.id, req.user.id, amt.amountP);
   if (pending) db.prepare("UPDATE requests SET status = 'paid' WHERE id = ?").run(pending.id);
+
+  db.prepare('INSERT OR IGNORE INTO payees (user_id, email) VALUES (?, ?)').run(req.user.id, to);
+  notify(payee.id, `${req.user.display_name || req.user.handle} paid you`, inr(amt.amountP));
 
   const note = String(req.body.note || '').slice(0, 80);
   return runPayment(req, res, {
@@ -870,6 +881,8 @@ app.post('/api/requests', auth, payLimiter, async (req, res) => {
   db.prepare('INSERT INTO requests (from_id, to_id, amount_p, note) VALUES (?, ?, ?, ?)')
     .run(req.user.id, target.id, amt.amountP, note);
 
+  notify(target.id, `${req.user.display_name || req.user.handle} requested ${inr(amt.amountP)}`, note);
+
   mail
     .sendMoneyRequest(target.email, {
       who: req.user.display_name || req.user.handle,
@@ -886,6 +899,349 @@ app.post('/api/requests/decline', auth, (req, res) => {
   if (!row) return fail(res, 404, 'No such request.');
   db.prepare("UPDATE requests SET status = 'declined' WHERE id = ?").run(row.id);
   res.json({ ok: true });
+});
+
+/* ---------------------------------------------------- saved payees (1) */
+
+app.get('/api/payees', auth, (req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT p.email, p.label, u.display_name, u.handle FROM payees p
+       LEFT JOIN users u ON u.email = p.email
+       WHERE p.user_id = ? ORDER BY p.id DESC LIMIT 40`
+    )
+    .all(req.user.id);
+
+  res.json({
+    payees: rows.map((p) => ({ email: p.email, label: p.label || p.display_name || p.handle || p.email }))
+  });
+});
+
+app.post('/api/payees', auth, (req, res) => {
+  const email = normEmail(req.body.email);
+  if (!validEmail(email)) return fail(res, 400, 'Enter a valid email address.');
+  if (email === req.user.email) return fail(res, 400, 'That is your own address.');
+
+  db.prepare('INSERT OR REPLACE INTO payees (user_id, email, label) VALUES (?, ?, ?)')
+    .run(req.user.id, email, String(req.body.label || '').slice(0, 40) || null);
+  res.json({ ok: true });
+});
+
+app.post('/api/payees/remove', auth, (req, res) => {
+  db.prepare('DELETE FROM payees WHERE user_id = ? AND email = ?').run(req.user.id, normEmail(req.body.email));
+  res.json({ ok: true });
+});
+
+/* ------------------------------------------------------- split bill (2) */
+
+/** Sends the same request to several people at once, splitting a total. */
+app.post('/api/split', auth, payLimiter, async (req, res) => {
+  const emails = [...new Set((Array.isArray(req.body.emails) ? req.body.emails : [])
+    .map(normEmail).filter(validEmail).filter((e) => e !== req.user.email))];
+  if (!emails.length) return fail(res, 400, 'Add at least one other person.');
+  if (emails.length > 15) return fail(res, 400, 'Split between at most fifteen people.');
+
+  const amt = amountCheck(req.body.total);
+  if (!amt.ok) return fail(res, 400, amt.message);
+
+  // Include yourself in the split unless told otherwise.
+  const shares = req.body.includeMe === false ? emails.length : emails.length + 1;
+  const each = Math.floor(amt.amountP / shares);
+  if (each < 100) return fail(res, 400, 'Each share works out under ₹1. Use a bigger total.');
+
+  const note = String(req.body.note || '').slice(0, 80) || null;
+  const missing = [];
+  let sent = 0;
+
+  for (const email of emails) {
+    const target = findUserByEmail.get(email);
+    if (!target) { missing.push(email); continue; }
+
+    db.prepare('INSERT INTO requests (from_id, to_id, amount_p, note) VALUES (?, ?, ?, ?)')
+      .run(req.user.id, target.id, each, note);
+    notify(target.id, `${req.user.display_name || req.user.handle} split a bill with you`, `Your share is ${inr(each)}${note ? ' · ' + note : ''}`);
+    mail.sendMoneyRequest(target.email, {
+      who: req.user.display_name || req.user.handle,
+      amountLabel: inr(each),
+      note
+    }).catch(() => {});
+    sent++;
+  }
+
+  res.json({
+    ok: true,
+    sent,
+    eachLabel: inr(each),
+    shares,
+    missing,
+    note: missing.length ? `${missing.length} of them are not on LSP-Pay yet.` : null
+  });
+});
+
+/* ------------------------------------------- scheduled & recurring (3,4) */
+
+app.get('/api/scheduled', auth, (req, res) => {
+  const one = db
+    .prepare("SELECT * FROM scheduled WHERE user_id = ? AND status = 'pending' ORDER BY run_at LIMIT 30")
+    .all(req.user.id);
+  const subs = db
+    .prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 30')
+    .all(req.user.id);
+
+  res.json({
+    scheduled: one.map((s) => ({
+      id: s.id, to: s.to_email, amountLabel: inr(s.amount_p), note: s.note,
+      runAt: new Date(s.run_at).toISOString()
+    })),
+    subscriptions: subs.map((s) => ({
+      id: s.id, to: s.to_email, amountLabel: inr(s.amount_p), everyDays: s.interval_days,
+      note: s.note, active: !!s.active, runs: s.runs, maxRuns: s.max_runs,
+      nextAt: new Date(s.next_at).toISOString(), lastError: s.last_error
+    }))
+  });
+});
+
+app.post('/api/scheduled', auth, (req, res) => {
+  const to = normEmail(req.body.to);
+  if (!validEmail(to)) return fail(res, 400, 'Enter their email address.');
+  if (to === req.user.email) return fail(res, 400, 'You cannot schedule a payment to yourself.');
+  if (!findUserByEmail.get(to)) return fail(res, 404, 'Nobody uses LSP-Pay with that email yet.');
+
+  const amt = amountCheck(req.body.amount);
+  if (!amt.ok) return fail(res, 400, amt.message);
+
+  const days = Number(req.body.inDays);
+  if (!Number.isFinite(days) || days < 1 || days > 365) return fail(res, 400, 'Pick between 1 and 365 days from now.');
+
+  const pinResult = checkPin(req.user, req.body.pin);
+  if (!pinResult.ok) return fail(res, 403, pinResult.message);
+
+  db.prepare('INSERT INTO scheduled (user_id, to_email, amount_p, note, run_at) VALUES (?, ?, ?, ?, ?)')
+    .run(req.user.id, to, amt.amountP, String(req.body.note || '').slice(0, 80) || null,
+      Date.now() + Math.floor(days) * 86400000);
+
+  res.json({ ok: true });
+});
+
+app.post('/api/scheduled/cancel', auth, (req, res) => {
+  db.prepare("UPDATE scheduled SET status = 'cancelled' WHERE id = ? AND user_id = ? AND status = 'pending'")
+    .run(Number(req.body.id), req.user.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/subscriptions', auth, (req, res) => {
+  const to = normEmail(req.body.to);
+  if (!validEmail(to)) return fail(res, 400, 'Enter their email address.');
+  if (to === req.user.email) return fail(res, 400, 'You cannot subscribe to yourself.');
+  if (!findUserByEmail.get(to)) return fail(res, 404, 'Nobody uses LSP-Pay with that email yet.');
+
+  const amt = amountCheck(req.body.amount, { max: 100000 });
+  if (!amt.ok) return fail(res, 400, amt.message);
+
+  const every = Number(req.body.everyDays);
+  if (!Number.isFinite(every) || every < 1 || every > 365) return fail(res, 400, 'Repeat between every 1 and 365 days.');
+
+  const pinResult = checkPin(req.user, req.body.pin);
+  if (!pinResult.ok) return fail(res, 403, pinResult.message);
+
+  const maxRuns = Number(req.body.maxRuns) > 0 ? Math.floor(Number(req.body.maxRuns)) : null;
+  const startNow = req.body.startNow !== false;
+
+  db.prepare(
+    'INSERT INTO subscriptions (user_id, to_email, amount_p, interval_days, note, next_at, max_runs) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    req.user.id, to, amt.amountP, Math.floor(every),
+    String(req.body.note || '').slice(0, 80) || null,
+    startNow ? Date.now() : Date.now() + Math.floor(every) * 86400000,
+    maxRuns
+  );
+
+  res.json({ ok: true });
+});
+
+app.post('/api/subscriptions/stop', auth, (req, res) => {
+  db.prepare('UPDATE subscriptions SET active = 0 WHERE id = ? AND user_id = ?').run(Number(req.body.id), req.user.id);
+  res.json({ ok: true });
+});
+
+/**
+ * Moves money for a due schedule or subscription. Deliberately silent on
+ * failure beyond a notification: an automated payment must never surprise
+ * someone by overdrawing them, so it simply doesn't run.
+ */
+function runAutoPayment(userId, toEmail, amountP, title) {
+  const payer = findUserById.get(userId);
+  const payee = findUserByEmail.get(toEmail);
+  if (!payer || !payee) return { ok: false, error: 'The other account no longer exists.' };
+  if (payer.balance_p < amountP) return { ok: false, error: 'Not enough balance.' };
+
+  if (payer.daily_limit_p && spentToday(payer.id) + amountP > payer.daily_limit_p)
+    return { ok: false, error: 'It would pass the daily limit.' };
+
+  const earned = pointsFor(amountP);
+  const ref = reference();
+
+  db.transaction(() => {
+    db.prepare('UPDATE users SET balance_p = balance_p - ?, points = points + ? WHERE id = ?')
+      .run(amountP, earned, payer.id);
+    addTx.run({
+      user_id: payer.id, kind: 'send', direction: 'debit', amount_p: amountP, points: earned,
+      title, detail: `Automatic · to ${payee.display_name || payee.handle}`, reference: ref
+    });
+    db.prepare('UPDATE users SET balance_p = balance_p + ? WHERE id = ?').run(amountP, payee.id);
+    addTx.run({
+      user_id: payee.id, kind: 'receive', direction: 'credit', amount_p: amountP, points: 0,
+      title: `Received from ${payer.display_name || payer.handle}`, detail: 'Automatic payment', reference: ref
+    });
+  })();
+
+  return { ok: true, reference: ref };
+}
+
+// Sweeps both queues every minute.
+setInterval(() => {
+  const now = Date.now();
+
+  db.prepare("SELECT * FROM scheduled WHERE status = 'pending' AND run_at <= ?").all(now).forEach((s) => {
+    const out = runAutoPayment(s.user_id, s.to_email, s.amount_p, s.note || `Scheduled payment to ${s.to_email}`);
+    db.prepare('UPDATE scheduled SET status = ?, last_error = ? WHERE id = ?')
+      .run(out.ok ? 'sent' : 'failed', out.error || null, s.id);
+    notify(s.user_id,
+      out.ok ? `Scheduled payment sent` : `Scheduled payment failed`,
+      `${inr(s.amount_p)} to ${s.to_email}${out.ok ? '' : ' — ' + out.error}`);
+  });
+
+  db.prepare('SELECT * FROM subscriptions WHERE active = 1 AND next_at <= ?').all(now).forEach((s) => {
+    const out = runAutoPayment(s.user_id, s.to_email, s.amount_p, s.note || `Recurring payment to ${s.to_email}`);
+    const runs = s.runs + (out.ok ? 1 : 0);
+    const done = s.max_runs !== null && runs >= s.max_runs;
+
+    db.prepare('UPDATE subscriptions SET runs = ?, next_at = ?, last_error = ?, active = ? WHERE id = ?')
+      .run(runs, now + s.interval_days * 86400000, out.error || null, done ? 0 : 1, s.id);
+
+    notify(s.user_id,
+      out.ok ? 'Recurring payment sent' : 'Recurring payment failed',
+      `${inr(s.amount_p)} to ${s.to_email}${out.ok ? '' : ' — ' + out.error + '. It will try again next cycle.'}`);
+  });
+}, 60000).unref();
+
+/* ------------------------------------------- bank accounts & payouts (5) */
+
+const IFSC = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+app.get('/api/banks', auth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM bank_accounts WHERE user_id = ? ORDER BY id DESC').all(req.user.id);
+  const payouts = db
+    .prepare('SELECT * FROM payouts WHERE user_id = ? ORDER BY rowid DESC LIMIT 10')
+    .all(req.user.id);
+
+  res.json({
+    banks: rows.map((b) => ({
+      id: b.id, holder: b.holder, last4: b.last4, ifsc: b.ifsc, bank: b.bank,
+      display: `${b.bank || 'Account'} ••••${b.last4}`
+    })),
+    payouts: payouts.map((p) => ({
+      id: p.id, amountLabel: inr(p.amount_p), status: p.status, createdAt: p.created_at
+    }))
+  });
+});
+
+app.post('/api/banks', auth, (req, res) => {
+  const number = String(req.body.number || '').replace(/\s/g, '');
+  if (!/^\d{9,18}$/.test(number)) return fail(res, 400, 'An account number is 9 to 18 digits.');
+
+  const ifsc = String(req.body.ifsc || '').toUpperCase().replace(/\s/g, '');
+  if (!IFSC.test(ifsc)) return fail(res, 400, 'That IFSC does not look right — it is 11 characters, like HDFC0001234.');
+
+  const holder = String(req.body.holder || '').trim().slice(0, 60);
+  if (holder.length < 2) return fail(res, 400, 'Enter the name on the account.');
+
+  const mine = db.prepare('SELECT COUNT(*) n FROM bank_accounts WHERE user_id = ?').get(req.user.id).n;
+  if (mine >= 3) return fail(res, 400, 'You can save up to three bank accounts.');
+
+  // Only the last four digits are kept, same reasoning as cards.
+  db.prepare('INSERT INTO bank_accounts (user_id, holder, last4, ifsc, bank) VALUES (?, ?, ?, ?, ?)')
+    .run(req.user.id, holder, number.slice(-4), ifsc, ifsc.slice(0, 4) + ' Bank');
+
+  res.json({ ok: true });
+});
+
+app.post('/api/banks/remove', auth, (req, res) => {
+  db.prepare('DELETE FROM bank_accounts WHERE id = ? AND user_id = ?').run(Number(req.body.id), req.user.id);
+  res.json({ ok: true });
+});
+
+/** Withdraw to a bank. Demo: the money leaves the wallet, nothing arrives. */
+app.post('/api/payouts', auth, payLimiter, (req, res) => {
+  const bank = db.prepare('SELECT * FROM bank_accounts WHERE id = ? AND user_id = ?')
+    .get(Number(req.body.bankId), req.user.id);
+  if (!bank) return fail(res, 404, 'That account is not on your profile.');
+
+  const amt = amountCheck(req.body.amount, { min: 100, max: 200000 });
+  if (!amt.ok) return fail(res, 400, amt.message);
+
+  const pinResult = checkPin(req.user, req.body.pin);
+  if (!pinResult.ok) return fail(res, 403, pinResult.message);
+
+  const fresh = findUserById.get(req.user.id);
+  if (fresh.balance_p < amt.amountP) return fail(res, 400, 'Not enough balance to withdraw that.');
+
+  const id = 'pout_' + crypto.randomBytes(7).toString('hex');
+  db.transaction(() => {
+    db.prepare('UPDATE users SET balance_p = balance_p - ? WHERE id = ?').run(amt.amountP, req.user.id);
+    db.prepare('INSERT INTO payouts (id, user_id, bank_id, amount_p) VALUES (?, ?, ?, ?)')
+      .run(id, req.user.id, bank.id, amt.amountP);
+    addTx.run({
+      user_id: req.user.id, kind: 'send', direction: 'debit', amount_p: amt.amountP, points: 0,
+      title: 'Withdrawn to bank', detail: `${bank.bank} ••••${bank.last4}`, reference: id
+    });
+  })();
+
+  notify(req.user.id, 'Withdrawal started', `${inr(amt.amountP)} to ${bank.bank} ••••${bank.last4}. Demo mode — no money actually moves.`);
+
+  res.json({
+    ok: true, id, amountLabel: inr(amt.amountP),
+    bank: `${bank.bank} ••••${bank.last4}`,
+    user: publicUser(findUserById.get(req.user.id))
+  });
+});
+
+/* ------------------------------------------------- notifications (6) */
+
+function notify(userId, title, body) {
+  try {
+    db.prepare('INSERT INTO notifications (user_id, title, body) VALUES (?, ?, ?)').run(userId, title, body || null);
+  } catch (err) {
+    console.error('[notify]', err.message);
+  }
+}
+
+app.get('/api/notifications', auth, (req, res) => {
+  const rows = db
+    .prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 40')
+    .all(req.user.id);
+  const unread = rows.filter((n) => !n.seen).length;
+
+  res.json({
+    unread,
+    notifications: rows.map((n) => ({
+      id: n.id, title: n.title, body: n.body, seen: !!n.seen, createdAt: n.created_at
+    }))
+  });
+});
+
+app.post('/api/notifications/seen', auth, (req, res) => {
+  db.prepare('UPDATE notifications SET seen = 1 WHERE user_id = ?').run(req.user.id);
+  res.json({ ok: true });
+});
+
+/* ---------------------------------------------- sign-in history (7) */
+
+app.get('/api/logins', auth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM logins WHERE user_id = ? ORDER BY id DESC LIMIT 20').all(req.user.id);
+  res.json({
+    logins: rows.map((l) => ({ ip: l.ip, agent: l.agent, createdAt: l.created_at }))
+  });
 });
 
 /* ------------------------------------------------------------- gateway */

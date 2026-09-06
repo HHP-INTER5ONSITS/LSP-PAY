@@ -36,7 +36,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const root = $('#root');
 const orderId = location.pathname.split('/').filter(Boolean).pop();
-let order = null, method = null;
+let order = null, method = null, applied = null;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -88,20 +88,45 @@ function render() {
 
   root.innerHTML = `
     ${brandBlock(m)}
-    <div class="co-amount"><div class="n">${esc(order.amountLabel)}</div>
+    <div class="co-amount"><div class="n" id="co-total">${esc(order.amountLabel)}</div>
       ${order.description ? `<p class="co-desc">${esc(order.description)}</p>` : ''}</div>
+    ${order.items && order.items.length ? `<div style="margin:6px 0 4px">${order.items.map(i =>
+      `<div class="kv"><span>${esc(i.name)}${i.qty > 1 ? ' × ' + i.qty : ''}</span><span>${esc(i.lineLabel)}</span></div>`).join('')}</div>` : ''}
+    <div class="toolbar" style="margin:18px 0 4px">
+      <input id="coupon" placeholder="Discount code" style="text-transform:uppercase" />
+      <button id="apply" class="btn-quiet" style="width:auto;margin:0;padding:9px 15px">Apply</button>
+    </div>
+    <p id="coupon-msg" style="font-size:13.5px;color:var(--mist);margin:8px 0 0"></p>
     <div class="tabs">${m.methods.map(x => `<button class="tab" data-m="${x}" aria-pressed="false">${LABELS[x] || x}</button>`).join('')}</div>
     <div id="form"></div>
     <button id="pay" class="btn-primary" disabled>Pay ${esc(order.amountLabel)}</button>
     <p id="msg" class="msg" hidden></p>
     <p class="co-foot">Secured by LSP-Pay. This is a demo gateway — no real money moves and no card is charged. Never enter a real card number.</p>`;
 
+  const cmsg = $('#coupon-msg');
+  $('#apply').addEventListener('click', async () => {
+    const code = $('#coupon').value.trim();
+    if (!code) return;
+    try {
+      const out = await api(`/api/checkout/${orderId}/coupon`, { code });
+      applied = out.code;
+      cmsg.style.color = 'var(--mint)';
+      cmsg.textContent = `${out.code} applied — ${out.discountLabel} off. You pay ${out.payableLabel}.`;
+      $('#co-total').textContent = out.payableLabel;
+      if (method) $('#pay').textContent = `Pay ${out.payableLabel}`;
+    } catch (err) {
+      applied = null;
+      cmsg.style.color = 'var(--coral)';
+      cmsg.textContent = err.message;
+    }
+  });
+
   root.querySelectorAll('.tab').forEach(t => t.addEventListener('click', async () => {
     method = t.dataset.m;
     root.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-pressed', String(x === t)));
     $('#form').innerHTML = methodForm(method);
     $('#pay').disabled = false;
-    $('#pay').textContent = method === 'cash' ? 'Choose cash' : `Pay ${order.amountLabel}`;
+    $('#pay').textContent = method === 'cash' ? 'Choose cash' : `Pay ${$('#co-total').textContent}`;
 
     if (method === 'netbanking') {
       const { banks } = await api('/api/checkout/banks');
@@ -117,6 +142,7 @@ function render() {
   $('#pay').addEventListener('click', async () => {
     const btn = $('#pay'), msg = $('#msg');
     const body = { method };
+    if (applied) body.coupon = applied;
     root.querySelectorAll('#form input, #form select').forEach(i => { if (i.name) body[i.name] = i.value.trim(); });
 
     btn.disabled = true; msg.hidden = true;

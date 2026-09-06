@@ -195,6 +195,21 @@ curl https://YOUR-APP.onrender.com/api/v1/summary -u "lsp_test_xxxxx:lsps_xxxxx"
 # every order as CSV, for your accountant
 curl https://YOUR-APP.onrender.com/api/v1/orders.csv -u "lsp_test_xxxxx:lsps_xxxxx" -o orders.csv</code></pre>
 
+  <h2>Invoices and discount codes</h2>
+  <p>Pass <code>items</code> when creating an order and the checkout page shows a proper itemised invoice rather than one figure. The total still comes from <code>amount</code> — the items are for the customer's benefit, so check your own arithmetic.</p>
+  <pre><code>-d '{
+  "amount": 500,
+  "items": [
+    { "name": "Coffee 250g", "qty": 2, "unit": 200 },
+    { "name": "Delivery", "qty": 1, "unit": 100 }
+  ]
+}'</code></pre>
+  <p>Discount codes are created per gateway and typed by the customer at checkout:</p>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/coupons \
+  -u "lsp_test_xxxxx:lsps_xxxxx" -H "Content-Type: application/json" \
+  -d '{"code": "WELCOME20", "percentOff": 20, "minSpend": 100, "maxUses": 500, "expiresInDays": 30}'</code></pre>
+  <p>Use <code>amountOff</code> instead of <code>percentOff</code> for a flat discount. <code>GET /api/v1/coupons</code> lists them and <code>POST /api/v1/coupons/:id/deactivate</code> switches one off. A discount can never take an order below ₹1.</p>
+
   <h2>Testing</h2>
   <table>
     <tr><th>Card, approves</th><td><code>4111 1111 1111 1111</code>, any future expiry, any CVV</td></tr>

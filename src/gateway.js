@@ -81,6 +81,8 @@ module.exports = function mountGateway(app, deps) {
     createdAt: o.created_at,
     paidAt: o.paid_at,
     expiresAt: new Date(o.expires_at).toISOString(),
+    items: db.prepare('SELECT name, qty, unit_p FROM order_items WHERE order_id = ?').all(o.id)
+      .map((i) => ({ name: i.name, qty: i.qty, unitLabel: inr(i.unit_p), lineLabel: inr(i.unit_p * i.qty) })),
     checkoutUrl: `${baseUrl}/pay/${o.id}`,
     merchant: m ? { name: m.name, logoUrl: m.logo_url, theme: m.theme, methods: m.methods.split(',') } : undefined
   });
@@ -372,6 +374,17 @@ module.exports = function mountGateway(app, deps) {
       idem
     );
 
+    // Optional line items turn a bare amount into an invoice.
+    if (Array.isArray(req.body.items)) {
+      const stmt = db.prepare('INSERT INTO order_items (order_id, name, qty, unit_p) VALUES (?, ?, ?, ?)');
+      req.body.items.slice(0, 30).forEach((it) => {
+        const name = String(it.name || '').slice(0, 80);
+        const qty = Math.max(1, Math.floor(Number(it.qty) || 1));
+        const unit = Number(it.unit);
+        if (name && Number.isFinite(unit) && unit >= 0) stmt.run(id, name, qty, paise(unit));
+      });
+    }
+
     const created = orderById.get(id);
     const view = publicOrder(created, req.merchant, baseUrlOf(req));
 
@@ -525,6 +538,17 @@ module.exports = function mountGateway(app, deps) {
     if (!merchant.methods.split(',').includes(method))
       return fail(res, 400, 'That payment method is not accepted here.');
 
+    // A code shrinks what the customer pays. The order keeps its original
+    // face value; the difference is recorded as a discount on the detail.
+    let chargeP = order.amount_p;
+    let coupon = null;
+    if (req.body.coupon) {
+      const applied = applyCoupon(order.merchant_id, req.body.coupon, order.amount_p);
+      if (applied.error) return fail(res, 400, applied.error);
+      coupon = applied.coupon;
+      chargeP = applied.payableP;
+    }
+
     let authCode = 'AUTH' + crypto.randomBytes(3).toString('hex').toUpperCase();
     let note = null;
     let paid = true;
@@ -541,7 +565,7 @@ module.exports = function mountGateway(app, deps) {
     } else if (method === 'card') {
       const check = cards.inspect(req.body);
       if (!check.ok) return fail(res, 400, check.message);
-      const authed = cards.authorise({ last4: check.last4 }, order.amount_p);
+      const authed = cards.authorise({ last4: check.last4 }, chargeP);
       if (!authed.ok) return fail(res, 402, authed.message);
       authCode = authed.authCode;
       note = `${check.brand} ••••${check.last4}`;
@@ -555,15 +579,15 @@ module.exports = function mountGateway(app, deps) {
       if (payer.id === merchant.owner_id) return fail(res, 400, 'You cannot pay your own gateway.');
 
       const fresh = findUserById.get(payer.id);
-      if (fresh.balance_p < order.amount_p) return fail(res, 400, 'Not enough balance in your wallet.');
+      if (fresh.balance_p < chargeP) return fail(res, 400, 'Not enough balance in your wallet.');
 
       db.transaction(() => {
-        db.prepare('UPDATE users SET balance_p = balance_p - ? WHERE id = ?').run(order.amount_p, payer.id);
+        db.prepare('UPDATE users SET balance_p = balance_p - ? WHERE id = ?').run(chargeP, payer.id);
         addTx.run({
           user_id: payer.id,
           kind: 'send',
           direction: 'debit',
-          amount_p: order.amount_p,
+          amount_p: chargeP,
           points: 0,
           title: `Paid ${merchant.name}`,
           detail: order.description || order.id,
@@ -577,6 +601,12 @@ module.exports = function mountGateway(app, deps) {
     }
 
     const status = paid ? 'paid' : 'awaiting_cash';
+    if (coupon) {
+      db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(coupon.id);
+      db.prepare('UPDATE orders SET amount_p = ? WHERE id = ?').run(chargeP, order.id);
+      note = [note, `coupon ${coupon.code}`].filter(Boolean).join(' · ');
+    }
+
     const changed = db
       .prepare(
         `UPDATE orders SET status = ?, method = ?, payer_note = ?, auth_code = ?,
@@ -876,6 +906,118 @@ module.exports = function mountGateway(app, deps) {
       min: link.min_p / 100,
       max: link.max_p / 100,
       merchant: { name: merchant.name, logoUrl: merchant.logo_url, theme: merchant.theme }
+    });
+  });
+
+  /* ----------------------------------------------------------- coupons */
+
+  const publicCoupon = (c) => ({
+    id: c.id,
+    code: c.code,
+    off: c.percent_off ? `${c.percent_off}% off` : `${inr(c.amount_off_p)} off`,
+    minSpendLabel: c.min_spend_p ? inr(c.min_spend_p) : null,
+    maxUses: c.max_uses,
+    usedCount: c.used_count,
+    active: !!c.active,
+    expiresAt: c.expires_at ? new Date(c.expires_at).toISOString() : null
+  });
+
+  function createCoupon(merchantId, body) {
+    const code = String(body.code || '').trim().toUpperCase().replace(/\s/g, '');
+    if (!/^[A-Z0-9_-]{3,24}$/.test(code)) return { error: 'A code is 3 to 24 letters, digits, dashes or underscores.' };
+
+    const percent = body.percentOff === undefined || body.percentOff === '' ? null : Math.floor(Number(body.percentOff));
+    const flat = body.amountOff === undefined || body.amountOff === '' ? null : Number(body.amountOff);
+
+    if (percent === null && flat === null) return { error: 'Set either a percentage or a flat amount off.' };
+    if (percent !== null && flat !== null) return { error: 'Set a percentage or a flat amount, not both.' };
+    if (percent !== null && (!Number.isFinite(percent) || percent < 1 || percent > 90))
+      return { error: 'A percentage discount must be between 1 and 90.' };
+    if (flat !== null && (!Number.isFinite(flat) || flat <= 0)) return { error: 'A flat discount must be positive.' };
+
+    try {
+      const info = db.prepare(
+        `INSERT INTO coupons (merchant_id, code, percent_off, amount_off_p, min_spend_p, max_uses, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        merchantId, code, percent, flat === null ? null : paise(flat),
+        body.minSpend ? paise(Number(body.minSpend)) : 0,
+        Number(body.maxUses) > 0 ? Math.floor(Number(body.maxUses)) : null,
+        Number(body.expiresInDays) > 0 ? Date.now() + Math.floor(Number(body.expiresInDays)) * 86400000 : null
+      );
+      return { coupon: db.prepare('SELECT * FROM coupons WHERE id = ?').get(info.lastInsertRowid) };
+    } catch (err) {
+      if (String(err.message).includes('UNIQUE')) return { error: 'You already have a coupon with that code.' };
+      throw err;
+    }
+  }
+
+  /** Works out what a code is worth on a given order, or why it doesn't. */
+  function applyCoupon(merchantId, code, amountP) {
+    const c = db.prepare('SELECT * FROM coupons WHERE merchant_id = ? AND code = ?')
+      .get(merchantId, String(code || '').trim().toUpperCase());
+
+    if (!c) return { error: 'That code is not valid here.' };
+    if (!c.active) return { error: 'That code is no longer active.' };
+    if (c.expires_at && Date.now() > c.expires_at) return { error: 'That code has expired.' };
+    if (c.max_uses !== null && c.used_count >= c.max_uses) return { error: 'That code has been fully used.' };
+    if (amountP < c.min_spend_p) return { error: `That code needs a minimum of ${inr(c.min_spend_p)}.` };
+
+    let off = c.percent_off ? Math.floor((amountP * c.percent_off) / 100) : c.amount_off_p;
+    off = Math.min(off, amountP - 100); // never take it below ₹1
+    if (off <= 0) return { error: 'That code cannot be used on an amount this small.' };
+
+    return { coupon: c, discountP: off, payableP: amountP - off };
+  }
+
+  app.post('/api/v1/coupons', apiLimiter, apiAuth, (req, res) => {
+    const out = createCoupon(req.merchant.id, req.body);
+    if (out.error) return fail(res, 400, out.error);
+    res.status(201).json(publicCoupon(out.coupon));
+  });
+
+  app.get('/api/v1/coupons', apiLimiter, apiAuth, (req, res) => {
+    const rows = db.prepare('SELECT * FROM coupons WHERE merchant_id = ? ORDER BY id DESC LIMIT 50').all(req.merchant.id);
+    res.json({ coupons: rows.map(publicCoupon) });
+  });
+
+  app.post('/api/v1/coupons/:id/deactivate', apiLimiter, apiAuth, (req, res) => {
+    const c = db.prepare('SELECT * FROM coupons WHERE id = ? AND merchant_id = ?').get(Number(req.params.id), req.merchant.id);
+    if (!c) return fail(res, 404, 'No such coupon.');
+    db.prepare('UPDATE coupons SET active = 0 WHERE id = ?').run(c.id);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/merchants/coupons', auth, (req, res) => {
+    const merchant = findMerchant.get(Number(req.body.merchantId), req.user.id);
+    if (!merchant) return fail(res, 404, 'No such gateway on your account.');
+    const out = createCoupon(merchant.id, req.body);
+    if (out.error) return fail(res, 400, out.error);
+    res.json(publicCoupon(out.coupon));
+  });
+
+  app.get('/api/merchants/coupons', auth, (req, res) => {
+    const merchant = findMerchant.get(Number(req.query.merchantId), req.user.id);
+    if (!merchant) return fail(res, 404, 'No such gateway on your account.');
+    const rows = db.prepare('SELECT * FROM coupons WHERE merchant_id = ? ORDER BY id DESC LIMIT 50').all(merchant.id);
+    res.json({ coupons: rows.map(publicCoupon) });
+  });
+
+  /** The checkout page checks a code before the customer commits. */
+  app.post('/api/checkout/:id/coupon', payLimiter, (req, res) => {
+    const order = orderById.get(req.params.id);
+    if (!order) return fail(res, 404, 'This payment link is not valid.');
+    if (order.status !== 'created') return fail(res, 409, 'This order is no longer open.');
+
+    const out = applyCoupon(order.merchant_id, req.body.code, order.amount_p);
+    if (out.error) return fail(res, 400, out.error);
+
+    res.json({
+      ok: true,
+      code: out.coupon.code,
+      discountLabel: inr(out.discountP),
+      payableLabel: inr(out.payableP),
+      off: out.coupon.percent_off ? `${out.coupon.percent_off}% off` : `${inr(out.coupon.amount_off_p)} off`
     });
   });
 

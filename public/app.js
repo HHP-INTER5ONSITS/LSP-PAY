@@ -181,6 +181,7 @@ function showWallet() {
   el('screen-app').hidden = false;
   paintUser();
   loadHistory();
+  refreshBell();
   if (user.pinIsDefault) {
     setTimeout(() => toast('Your PIN is still 00000. Change it in Settings.'), 900);
   }
@@ -301,8 +302,13 @@ const readForm = (root) => {
 
 /* ─────────────────────────── 1. pay a person ──────────────────────────── */
 
-function sheetPay() {
+async function sheetPay() {
+  let saved = [];
+  try { saved = (await api('/api/payees')).payees; } catch {}
+
   openSheet('Pay a person', `
+    ${saved.length ? `<div class="toolbar" style="margin-bottom:14px">${saved.slice(0, 6).map((p) =>
+      `<button class="tab-payee btn-quiet" style="width:auto;margin:0;padding:8px 13px;font-size:13px" data-email="${escapeHtml(p.email)}">${escapeHtml(p.label)}</button>`).join('')}</div>` : ''}
     <p class="sheet-note">Money reaches them the moment you confirm. They need an LSP-Pay account on the same email.</p>
     <label class="field"><span>Their email address</span>
       <input name="to" type="email" inputmode="email" placeholder="friend@example.com" /></label>
@@ -311,6 +317,9 @@ function sheetPay() {
       <input name="note" maxlength="80" placeholder="Dinner, rent, cab…" /></label>
     <button id="go" class="btn-primary">Continue</button>
   `, (root) => {
+    root.querySelectorAll('.tab-payee').forEach((b) =>
+      b.addEventListener('click', () => { root.querySelector('[name=to]').value = b.dataset.email; }));
+
     $('#go', root).addEventListener('click', async () => {
       const f = readForm(root);
       if (!f.to) return toast('Enter their email address.', true);
@@ -674,6 +683,7 @@ function sheetSettings() {
       <input name="dailyLimit" type="number" min="1" step="1" value="${user.dailyLimit || ''}" placeholder="No limit" /></label>
     <button id="save" class="btn-primary">Save profile</button>
     <button id="pin" class="btn-quiet">Change payment PIN</button>
+    <button id="logins" class="btn-quiet">Recent sign-ins</button>
     <button id="out" class="btn-quiet">Sign out</button>
   `, (root) => {
     $('#save', root).addEventListener('click', async () => {
@@ -683,6 +693,16 @@ function sheetSettings() {
       } catch (err) { toast(err.message, true); }
     });
     $('#pin', root).addEventListener('click', sheetChangePin);
+    $('#logins', root).addEventListener('click', async () => {
+      const { logins } = await api('/api/logins');
+      openSheet('Recent sign-ins', logins.length
+        ? logins.map((l) => `<div class="kv"><span>${escapeHtml(l.ip || 'unknown address')}<br>
+            <small style="color:var(--mist)">${escapeHtml((l.agent || '').slice(0, 46))}</small></span>
+            <span>${new Date(l.createdAt.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</span></div>`).join('')
+          + '<p class="sheet-note" style="margin-top:16px">See something you do not recognise? Change your PIN and sign out.</p>'
+        : '<p class="empty">No sign-ins recorded yet.</p>');
+    });
+
     $('#out', root).addEventListener('click', async () => {
       await api('/api/auth/logout', {});
       location.reload();
@@ -750,6 +770,7 @@ async function sheetRequest() {
     <label class="field"><span>What for (optional)</span>
       <input name="note" maxlength="80" placeholder="Dinner on Friday" /></label>
     <button id="go" class="btn-primary">Send the request</button>
+    <button id="split" class="btn-quiet">Split a bill between several people</button>
     <p id="msg" class="msg" hidden></p>
 
     ${outgoing.length ? `<h3 class="section-title">You asked for</h3>
@@ -779,6 +800,8 @@ async function sheetRequest() {
       })
     );
 
+    $('#split', root).addEventListener('click', sheetSplit);
+
     $('#go', root).addEventListener('click', async () => {
       try {
         await api('/api/requests', readForm(root));
@@ -786,6 +809,32 @@ async function sheetRequest() {
         toast('Request sent.');
       } catch (err) {
         const msg = $('#msg', root); msg.textContent = err.message; msg.hidden = false;
+      }
+    });
+  });
+}
+
+function sheetSplit() {
+  openSheet('Split a bill', `
+    <p class="sheet-note">Everyone gets a request for their share. You are counted in the split, so a ₹900 bill between you and two friends means ₹300 each.</p>
+    <label class="field"><span>Their email addresses, one per line</span>
+      <textarea name="emails" rows="4" placeholder="friend@example.com&#10;other@example.com" style="resize:vertical"></textarea></label>
+    <label class="field"><span>The total bill in rupees</span>
+      <input name="total" type="number" min="1" step="0.01" placeholder="900" /></label>
+    <label class="field"><span>What for (optional)</span>
+      <input name="note" maxlength="80" placeholder="Dinner at Kaapi Co." /></label>
+    <button id="go" class="btn-primary">Send everyone their share</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      const f = readForm(root);
+      const emails = (root.querySelector('[name=emails]').value || '').split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean);
+      try {
+        const out = await api('/api/split', { emails, total: f.total, note: f.note });
+        closeSheet();
+        toast(`${out.eachLabel} requested from ${out.sent} ${out.sent === 1 ? 'person' : 'people'}.${out.note ? ' ' + out.note : ''}`);
+      } catch (err) {
+        const m = $('#msg', root); m.textContent = err.message; m.hidden = false;
       }
     });
   });
@@ -818,6 +867,172 @@ async function sheetInsights() {
   `, (root) => {
     $('#export', root).addEventListener('click', () => window.open('/api/statement.csv', '_blank'));
   });
+}
+
+/* ──────────────── scheduled, recurring, bank, notifications ───────────── */
+
+async function sheetScheduled() {
+  const d = await api('/api/scheduled');
+
+  openSheet('Scheduled and recurring', `
+    ${d.scheduled.length ? `<h3 class="section-title" style="margin-top:0">Coming up once</h3>
+      ${d.scheduled.map((s) => `<div class="kv">
+        <span>${escapeHtml(s.amountLabel)} to ${escapeHtml(s.to)}<br>
+          <small style="color:var(--mist)">${new Date(s.runAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}${s.note ? ' · ' + escapeHtml(s.note) : ''}</small></span>
+        <button class="btn-link" data-cancel="${s.id}">Cancel</button></div>`).join('')}` : ''}
+
+    ${d.subscriptions.length ? `<h3 class="section-title">Repeating</h3>
+      ${d.subscriptions.map((s) => `<div class="kv">
+        <span>${escapeHtml(s.amountLabel)} to ${escapeHtml(s.to)}<br>
+          <small style="color:var(--mist)">every ${s.everyDays} day${s.everyDays === 1 ? '' : 's'} · ${s.runs} sent${s.maxRuns ? ' of ' + s.maxRuns : ''}${s.lastError ? ' · last failed: ' + escapeHtml(s.lastError) : ''}</small></span>
+        ${s.active ? `<button class="btn-link" data-stop="${s.id}">Stop</button>` : '<span style="color:var(--mist);font-size:13px">Stopped</span>'}</div>`).join('')}` : ''}
+
+    ${!d.scheduled.length && !d.subscriptions.length ? '<p class="empty">Nothing set up yet.</p>' : ''}
+
+    <button id="one" class="btn-primary" style="margin-top:20px">Schedule a one-off payment</button>
+    <button id="rec" class="btn-quiet">Set up a repeating payment</button>
+  `, (root) => {
+    $('#one', root).addEventListener('click', () => sheetScheduleOne());
+    $('#rec', root).addEventListener('click', () => sheetRecurring());
+    root.querySelectorAll('[data-cancel]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        await api('/api/scheduled/cancel', { id: Number(b.dataset.cancel) });
+        toast('Cancelled.'); sheetScheduled();
+      }));
+    root.querySelectorAll('[data-stop]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        await api('/api/subscriptions/stop', { id: Number(b.dataset.stop) });
+        toast('Stopped.'); sheetScheduled();
+      }));
+  });
+}
+
+function sheetScheduleOne() {
+  openSheet('Schedule a payment', `
+    <p class="sheet-note">It goes out automatically on the day. If your balance is short then, it is skipped and you are told — never overdrawn.</p>
+    <label class="field"><span>Their email address</span><input name="to" type="email" placeholder="friend@example.com" /></label>
+    <label class="field"><span>Amount in rupees</span><input name="amount" type="number" min="1" step="0.01" placeholder="0.00" /></label>
+    <label class="field"><span>In how many days</span><input name="inDays" type="number" min="1" max="365" placeholder="7" /></label>
+    <label class="field"><span>Note (optional)</span><input name="note" maxlength="80" placeholder="Rent" /></label>
+    <label class="field"><span>Your payment PIN</span><input name="pin" type="password" inputmode="numeric" maxlength="5" placeholder="•••••" /></label>
+    <button id="go" class="btn-primary">Schedule it</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try { await api('/api/scheduled', readForm(root)); closeSheet(); toast('Payment scheduled.'); }
+      catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+  });
+}
+
+function sheetRecurring() {
+  openSheet('Repeating payment', `
+    <p class="sheet-note">A standing instruction. It keeps going until you stop it, or until it has run the number of times you set.</p>
+    <label class="field"><span>Their email address</span><input name="to" type="email" placeholder="landlord@example.com" /></label>
+    <label class="field"><span>Amount in rupees</span><input name="amount" type="number" min="1" step="0.01" placeholder="0.00" /></label>
+    <div class="field-row">
+      <label class="field"><span>Every how many days</span><input name="everyDays" type="number" min="1" max="365" placeholder="30" /></label>
+      <label class="field"><span>Stop after (optional)</span><input name="maxRuns" type="number" min="1" placeholder="never" /></label>
+    </div>
+    <label class="field"><span>Note (optional)</span><input name="note" maxlength="80" placeholder="Monthly rent" /></label>
+    <label class="field"><span>Your payment PIN</span><input name="pin" type="password" inputmode="numeric" maxlength="5" placeholder="•••••" /></label>
+    <button id="go" class="btn-primary">Start it</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try { await api('/api/subscriptions', { ...readForm(root), startNow: false }); closeSheet(); toast('Repeating payment set up.'); }
+      catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+  });
+}
+
+async function sheetBank() {
+  const d = await api('/api/banks');
+
+  openSheet('Bank and withdrawals', `
+    ${d.banks.length
+      ? `<div class="picker">${d.banks.map((b) => `
+          <div class="pick" style="cursor:default">
+            <span><strong>${escapeHtml(b.display)}</strong><small>${escapeHtml(b.holder)} · ${escapeHtml(b.ifsc)}</small></span>
+            <span style="display:flex;gap:10px">
+              <button class="btn-link" data-out="${b.id}" data-name="${escapeHtml(b.display)}">Withdraw</button>
+              <button class="btn-link" data-del="${b.id}">Remove</button>
+            </span></div>`).join('')}</div>`
+      : '<p class="empty">No bank account saved yet.</p>'}
+    <button id="add" class="btn-primary">Add a bank account</button>
+
+    ${d.payouts.length ? `<h3 class="section-title" style="margin-top:26px">Recent withdrawals</h3>
+      ${d.payouts.map((p) => `<div class="kv"><span>${escapeHtml(p.amountLabel)}</span><span>${escapeHtml(p.status)}</span></div>`).join('')}` : ''}
+    <p class="sheet-note" style="margin-top:16px">Demo mode — the money leaves your wallet but no bank is credited. Only the last four digits of an account are stored.</p>
+  `, (root) => {
+    $('#add', root).addEventListener('click', sheetAddBank);
+    root.querySelectorAll('[data-del]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        await api('/api/banks/remove', { id: Number(b.dataset.del) });
+        toast('Account removed.'); sheetBank();
+      }));
+    root.querySelectorAll('[data-out]').forEach((b) =>
+      b.addEventListener('click', () => sheetWithdraw(Number(b.dataset.out), b.dataset.name)));
+  });
+}
+
+function sheetAddBank() {
+  openSheet('Add a bank account', `
+    <label class="field"><span>Name on the account</span><input name="holder" maxlength="60" placeholder="Saurabh Bhardwaj" /></label>
+    <label class="field"><span>Account number</span><input name="number" inputmode="numeric" maxlength="18" placeholder="123456789012" /></label>
+    <label class="field"><span>IFSC</span><input name="ifsc" maxlength="11" placeholder="HDFC0001234" style="text-transform:uppercase" /></label>
+    <button id="go" class="btn-primary">Save account</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try { await api('/api/banks', readForm(root)); closeSheet(); toast('Bank account saved.'); sheetBank(); }
+      catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+  });
+}
+
+function sheetWithdraw(bankId, name) {
+  openSheet('Withdraw to bank', `
+    <p class="sheet-note">To ${escapeHtml(name)}. Real transfers take a working day; this one is instant and imaginary.</p>
+    ${amountField('Amount in rupees', 100)}
+    <button id="go" class="btn-primary">Continue</button>
+  `, (root) => {
+    $('#go', root).addEventListener('click', () => {
+      const f = readForm(root);
+      if (!(Number(f.amount) >= 100)) return toast('Minimum withdrawal is ₹100.', true);
+      confirmWithPin({
+        amountLabel: money(f.amount),
+        to: `To ${name}`,
+        actionLabel: 'Withdraw',
+        submit: (pin) => api('/api/payouts', { bankId, amount: f.amount, pin }),
+        onDone: (out) => showSuccess({
+          amountLabel: out.amountLabel,
+          headline: `On its way to ${out.bank}`,
+          rows: [['Reference', out.id], ['Balance left', user.balanceLabel]]
+        })
+      });
+    });
+  });
+}
+
+async function sheetNotifications() {
+  const d = await api('/api/notifications');
+  await api('/api/notifications/seen', {});
+  el('bell-dot').hidden = true;
+
+  openSheet('Notifications', d.notifications.length
+    ? d.notifications.map((n) => `<div class="tx"><div class="tx-main">
+        <div class="tx-title">${escapeHtml(n.title)}</div>
+        <div class="tx-sub">${escapeHtml([n.body, new Date(n.createdAt.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })].filter(Boolean).join(' · '))}</div>
+      </div></div>`).join('')
+    : '<p class="empty">Nothing yet.</p>');
+}
+
+async function refreshBell() {
+  try {
+    const { unread } = await api('/api/notifications');
+    el('bell-dot').hidden = unread === 0;
+  } catch { /* not signed in */ }
 }
 
 /* ─────────────────────────── 8. business gateway ─────────────────────── */
@@ -862,6 +1077,7 @@ async function sheetBusiness() {
     <button id="test" class="btn-primary" style="margin-top:20px">Create a test order</button>
     <button id="links" class="btn-quiet">Shareable payment links</button>
     <button id="customers" class="btn-quiet">Customers</button>
+    <button id="coupons" class="btn-quiet">Discount codes</button>
     <button id="newgw" class="btn-quiet">Add another gateway</button>
     <button id="settings" class="btn-quiet">Logo, theme and methods</button>
     <button id="roll" class="btn-quiet">Reset API secret</button>
@@ -881,6 +1097,7 @@ async function sheetBusiness() {
     $('#test', root).addEventListener('click', () => sheetTestOrder(m));
     $('#links', root).addEventListener('click', () => sheetLinks(m));
     $('#customers', root).addEventListener('click', () => sheetCustomers(m));
+    $('#coupons', root).addEventListener('click', () => sheetCoupons(m));
     $('#newgw', root).addEventListener('click', () => sheetNewGateway());
     $('#switch', root)?.addEventListener('change', (e) => {
       window.__lspGateway = Number(e.target.value);
@@ -1044,6 +1261,43 @@ function sheetRefund(m, order) {
   });
 }
 
+async function sheetCoupons(m) {
+  const { coupons } = await api(`/api/merchants/coupons?merchantId=${m.id}`);
+
+  openSheet('Discount codes', `
+    <p class="sheet-note">Customers type these at checkout. The discount comes off what they pay you.</p>
+    ${coupons.length
+      ? coupons.map((c) => `<div class="kv">
+          <span>${escapeHtml(c.code)}<br><small style="color:var(--mist)">${escapeHtml(c.off)}${c.minSpendLabel ? ' · min ' + escapeHtml(c.minSpendLabel) : ''} · used ${c.usedCount}${c.maxUses ? ' of ' + c.maxUses : ''}</small></span>
+          <span>${c.active ? 'Live' : 'Off'}</span></div>`).join('')
+      : '<p class="empty">No codes yet.</p>'}
+    <button id="add" class="btn-primary">Create a code</button>
+  `, (root) => $('#add', root).addEventListener('click', () => sheetNewCoupon(m)));
+}
+
+function sheetNewCoupon(m) {
+  openSheet('New discount code', `
+    <label class="field"><span>The code customers type</span>
+      <input name="code" maxlength="24" placeholder="WELCOME20" style="text-transform:uppercase" /></label>
+    <div class="field-row">
+      <label class="field"><span>Percent off</span><input name="percentOff" type="number" min="1" max="90" placeholder="20" /></label>
+      <label class="field"><span>Or flat ₹ off</span><input name="amountOff" type="number" min="1" placeholder="100" /></label>
+    </div>
+    <div class="field-row">
+      <label class="field"><span>Minimum spend (optional)</span><input name="minSpend" type="number" min="1" placeholder="none" /></label>
+      <label class="field"><span>Use limit (optional)</span><input name="maxUses" type="number" min="1" placeholder="unlimited" /></label>
+    </div>
+    <label class="field"><span>Expires in days (optional)</span><input name="expiresInDays" type="number" min="1" placeholder="never" /></label>
+    <button id="go" class="btn-primary">Create it</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try { await api('/api/merchants/coupons', { merchantId: m.id, ...readForm(root) }); closeSheet(); toast('Code created.'); sheetCoupons(m); }
+      catch (err) { const msg = $('#msg', root); msg.textContent = err.message; msg.hidden = false; }
+    });
+  });
+}
+
 async function sheetCustomers(m) {
   const { customers } = await api(`/api/merchants/customers?merchantId=${m.id}`);
 
@@ -1203,7 +1457,9 @@ const SHEETS = {
   cards: sheetCards,
   business: sheetBusiness,
   request: sheetRequest,
-  insights: sheetInsights
+  insights: sheetInsights,
+  scheduled: sheetScheduled,
+  bank: sheetBank
 };
 
 document.querySelectorAll('[data-open]').forEach((b) =>
@@ -1214,6 +1470,7 @@ document.querySelectorAll('[data-open]').forEach((b) =>
 );
 
 el('btn-settings').addEventListener('click', sheetSettings);
+el('btn-bell').addEventListener('click', sheetNotifications);
 ['tx-search', 'tx-filter'].forEach((id) => el(id)?.addEventListener('input', paintHistory));
 el('tx-export')?.addEventListener('click', () => window.open('/api/statement.csv', '_blank'));
 

@@ -172,6 +172,114 @@ CREATE TABLE IF NOT EXISTS webhook_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_pending ON webhook_jobs(delivered, next_at);
 
+-- Line items, so an order can be a proper invoice rather than one figure.
+CREATE TABLE IF NOT EXISTS order_items (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id     TEXT NOT NULL REFERENCES orders(id),
+  name         TEXT NOT NULL,
+  qty          INTEGER NOT NULL DEFAULT 1,
+  unit_p       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
+
+-- Discount codes a customer types at checkout.
+CREATE TABLE IF NOT EXISTS coupons (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id  INTEGER NOT NULL REFERENCES merchants(id),
+  code         TEXT NOT NULL,
+  percent_off  INTEGER,
+  amount_off_p INTEGER,
+  min_spend_p  INTEGER NOT NULL DEFAULT 0,
+  max_uses     INTEGER,
+  used_count   INTEGER NOT NULL DEFAULT 0,
+  active       INTEGER NOT NULL DEFAULT 1,
+  expires_at   INTEGER,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coupon_code ON coupons(merchant_id, code);
+
+-- A standing instruction: pay this person this much, this often.
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  to_email     TEXT NOT NULL,
+  amount_p     INTEGER NOT NULL,
+  interval_days INTEGER NOT NULL,
+  note         TEXT,
+  next_at      INTEGER NOT NULL,
+  runs         INTEGER NOT NULL DEFAULT 0,
+  max_runs     INTEGER,
+  active       INTEGER NOT NULL DEFAULT 1,
+  last_error   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_subs_due ON subscriptions(active, next_at);
+
+-- A single payment queued for a future date.
+CREATE TABLE IF NOT EXISTS scheduled (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  to_email     TEXT NOT NULL,
+  amount_p     INTEGER NOT NULL,
+  note         TEXT,
+  run_at       INTEGER NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | failed | cancelled
+  last_error   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled(status, run_at);
+
+-- Saved payees, so you don't retype an address every time.
+CREATE TABLE IF NOT EXISTS payees (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  email        TEXT NOT NULL,
+  label        TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payee_unique ON payees(user_id, email);
+
+-- Bank accounts for withdrawals. Like cards, no full number is kept:
+-- only the last four digits and the IFSC.
+CREATE TABLE IF NOT EXISTS bank_accounts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  holder       TEXT NOT NULL,
+  last4        TEXT NOT NULL,
+  ifsc         TEXT NOT NULL,
+  bank         TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS payouts (
+  id           TEXT PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  bank_id      INTEGER NOT NULL REFERENCES bank_accounts(id),
+  amount_p     INTEGER NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'processing',
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  title        TEXT NOT NULL,
+  body         TEXT,
+  seen         INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, seen);
+
+-- Sign-in history, so someone can spot a session they don't recognise.
+CREATE TABLE IF NOT EXISTS logins (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  ip           TEXT,
+  agent        TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_logins_user ON logins(user_id, id DESC);
+
 CREATE TABLE IF NOT EXISTS gift_cards (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   code           TEXT NOT NULL UNIQUE,

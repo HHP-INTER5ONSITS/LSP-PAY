@@ -18,6 +18,12 @@ Built to run on a free Render web service with a GitHub repo behind it. Emails g
 | Request money | Ask another user to pay you. They approve or decline; paying clears the request. |
 | Spending insights | Where this month's money went, by category, with a CSV statement export. |
 | Daily limit | A self-imposed cap. Card payments count towards it too. |
+| Split a bill | Divide a total between up to fifteen people; each gets a request for their share. |
+| Scheduled and recurring | A one-off payment on a future date, or a standing instruction that repeats. Skipped rather than overdrawn if the balance is short. |
+| Bank withdrawals | Save up to three accounts and move money out. Only the last four digits are stored. |
+| Saved payees | Anyone you pay is remembered as a quick-pick. |
+| Notifications | Payments, requests, sign-ins and automatic payments, in one place. |
+| Sign-in history | The last twenty sign-ins with address and device, so a stranger stands out. |
 | Points | 5 points per ₹100 spent, on every one of the flows above. |
 
 **Desktop and mobile.** Below 900px it's a single column like a payment app. Above that it becomes a two-pane desktop layout — a nav rail on the left, balance and activity on the right — and sheets become centred dialogs instead of bottom sheets.
@@ -50,7 +56,7 @@ Send the customer to the `checkoutUrl` that comes back, then confirm the result 
 
 Never trust the customer's browser to tell you a payment succeeded. Check the API.
 
-**Also in the gateway:** up to three gateways per account with a switcher, a customer list, printable QR codes for any payment link (`/l/:id/qr.svg`), refunds (full or partial, back to the payer's wallet where possible), shareable payment links that work like Razorpay's payment pages, `Idempotency-Key` support so a retried request never double-charges, webhook retries with backoff, a settlement summary and a CSV export.
+**Also in the gateway:** discount codes customers type at checkout (percentage or flat, with minimum spend, use limits and expiry), invoice line items, up to three gateways per account with a switcher, a customer list, printable QR codes for any payment link (`/l/:id/qr.svg`), refunds (full or partial, back to the payer's wallet where possible), shareable payment links that work like Razorpay's payment pages, `Idempotency-Key` support so a retried request never double-charges, webhook retries with backoff, a settlement summary and a CSV export.
 
 **Emails.** Add `"notify": true` and a `customer_email` when creating an order and the customer is emailed the payment link with a Pay button — Razorpay's Payment Links, essentially, so you can charge someone without having a website at all. They also get a receipt once paid, and you get an alert when money arrives. `POST /api/v1/orders/:id/notify` sends the link again. All of it goes through Resend, so verify a domain there before emailing real customers.
 
