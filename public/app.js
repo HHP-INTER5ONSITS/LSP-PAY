@@ -718,16 +718,21 @@ async function sheetBusiness() {
   }
 
   const m = merchants[0];
-  const { orders, collectedLabel, paidCount } = await api(`/api/merchants/orders?merchantId=${m.id}`);
+  const { orders } = await api(`/api/merchants/orders?merchantId=${m.id}`);
+  const sum = await api(`/api/merchants/summary?merchantId=${m.id}`);
 
   openSheet(m.name, `
-    <div class="kv"><span>Collected</span><span>${escapeHtml(collectedLabel)} · ${paidCount} paid</span></div>
+    <div class="kv"><span>Collected</span><span>${escapeHtml(sum.collectedLabel)} · ${sum.paidCount} paid</span></div>
+    <div class="kv"><span>Refunded</span><span>${escapeHtml(sum.refundedLabel)} · ${sum.refundCount}</span></div>
+    <div class="kv"><span>Net</span><span>${escapeHtml(sum.netLabel)}</span></div>
+    <div class="kv"><span>Awaiting payment</span><span>${escapeHtml(sum.pendingLabel)} · ${sum.pendingCount}</span></div>
     <div class="kv"><span>Key ID</span><span style="word-break:break-all">${escapeHtml(m.keyId)}</span></div>
     <div class="kv"><span>Secret</span><span>Hidden — reset to get a new one</span></div>
     <div class="kv"><span>Checkout theme</span><span>${m.theme === 'light' ? 'Light' : 'Dark'}</span></div>
     <div class="kv"><span>Methods</span><span>${escapeHtml(m.methods.join(', '))}</span></div>
 
     <button id="test" class="btn-primary" style="margin-top:20px">Create a test order</button>
+    <button id="links" class="btn-quiet">Shareable payment links</button>
     <button id="settings" class="btn-quiet">Logo, theme and methods</button>
     <button id="roll" class="btn-quiet">Reset API secret</button>
     <button id="docs" class="btn-quiet">API documentation</button>
@@ -737,12 +742,17 @@ async function sheetBusiness() {
       ? orders.slice(0, 12).map((o) => `<div class="tx">
           <div class="tx-main">
             <div class="tx-title">${escapeHtml(o.amountLabel)} · ${escapeHtml(o.status)}</div>
-            <div class="tx-sub">${escapeHtml([o.description, o.method, o.id].filter(Boolean).join(' · '))}</div>
+            <div class="tx-sub">${escapeHtml([o.description, o.method, o.refunded > 0 ? 'refunded ' + o.refundedLabel : null, o.id].filter(Boolean).join(' · '))}</div>
           </div>
+          ${o.status === 'paid' ? `<button class="btn-link" data-refund="${o.id}">Refund</button>` : ''}
         </div>`).join('')
       : '<p class="empty">No orders yet. Create one from your server with the API.</p>'}
   `, (root) => {
     $('#test', root).addEventListener('click', () => sheetTestOrder(m));
+    $('#links', root).addEventListener('click', () => sheetLinks(m));
+    root.querySelectorAll('[data-refund]').forEach((b) =>
+      b.addEventListener('click', () => sheetRefund(m, orders.find((o) => o.id === b.dataset.refund)))
+    );
     $('#settings', root).addEventListener('click', () => sheetBusinessSettings(m));
     $('#docs', root).addEventListener('click', () => window.open('/developers', '_blank'));
     $('#roll', root).addEventListener('click', () => sheetRollSecret(m));
@@ -787,6 +797,98 @@ function showCheckoutLink(o) {
     $('#copy', root).addEventListener('click', async () => {
       try { await navigator.clipboard.writeText(o.checkoutUrl); toast('Link copied.'); }
       catch { toast('Select the link above and copy it.', true); }
+    });
+  });
+}
+
+async function sheetLinks(m) {
+  const { links } = await api(`/api/merchants/links?merchantId=${m.id}`);
+
+  openSheet('Payment links', `
+    <p class="sheet-note">A link you can share as many times as you like — put it in a bio, a WhatsApp message or a printed QR. Each visit makes a fresh order, so two people can pay the same link without clashing.</p>
+    ${links.length
+      ? `<div class="picker">${links.map((l) => `
+          <div class="pick" style="cursor:default">
+            <span><strong>${escapeHtml(l.title)}</strong>
+              <small>${escapeHtml(l.amountLabel)} · used ${l.usedCount}${l.usageLimit ? ' of ' + l.usageLimit : ''}${l.active ? '' : ' · off'}</small></span>
+            <button class="btn-link" data-copy="${escapeHtml(l.url)}">Copy</button>
+          </div>`).join('')}</div>`
+      : '<p class="empty">No links yet.</p>'}
+    <button id="add" class="btn-primary">Create a link</button>
+  `, (root) => {
+    root.querySelectorAll('[data-copy]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(b.dataset.copy); toast('Link copied.'); }
+        catch { toast(b.dataset.copy, false); }
+      })
+    );
+    $('#add', root).addEventListener('click', () => sheetNewLink(m));
+  });
+}
+
+function sheetNewLink(m) {
+  openSheet('Create a payment link', `
+    <label class="field"><span>What is it for</span>
+      <input name="title" maxlength="80" placeholder="Coffee subscription" /></label>
+    <label class="field"><span>Amount in rupees — leave empty to let the payer choose</span>
+      <input name="amount" type="number" inputmode="decimal" min="1" step="0.01" placeholder="250" /></label>
+    <div class="field-row">
+      <label class="field"><span>Usage limit (optional)</span>
+        <input name="usageLimit" type="number" min="1" placeholder="unlimited" /></label>
+      <label class="field"><span>Expires in days (optional)</span>
+        <input name="expiresInDays" type="number" min="1" placeholder="never" /></label>
+    </div>
+    <button id="go" class="btn-primary">Create it</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        const l = await api('/api/merchants/links', { merchantId: m.id, ...readForm(root) });
+        openSheet('Your payment link', `
+          <div class="summary"><div class="summary-amt">${escapeHtml(l.amountLabel)}</div>
+            <div class="summary-to">${escapeHtml(l.title)}</div></div>
+          <div class="gift-code" style="font-size:13px;word-break:break-all;letter-spacing:0">${escapeHtml(l.url)}</div>
+          <button id="open" class="btn-primary">Open it</button>
+          <button id="copy" class="btn-quiet">Copy the link</button>
+        `, (r2) => {
+          $('#open', r2).addEventListener('click', () => window.open(l.url, '_blank'));
+          $('#copy', r2).addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(l.url); toast('Link copied.'); }
+            catch { toast('Select the link above and copy it.', true); }
+          });
+        });
+      } catch (err) {
+        const msg = $('#msg', root); msg.textContent = err.message; msg.hidden = false;
+      }
+    });
+  });
+}
+
+function sheetRefund(m, order) {
+  openSheet('Refund', `
+    <div class="summary"><div class="summary-amt">${escapeHtml(order.amountLabel)}</div>
+      <div class="summary-to">${escapeHtml(order.description || order.id)}</div></div>
+    <p class="sheet-note">The money comes out of your wallet. Leave the amount empty to refund it all.</p>
+    <label class="field"><span>Amount to refund (optional)</span>
+      <input name="amount" type="number" inputmode="decimal" min="1" step="0.01" placeholder="everything" /></label>
+    <label class="field"><span>Reason (optional)</span>
+      <input name="reason" maxlength="140" placeholder="Item out of stock" /></label>
+    <button id="go" class="btn-primary">Refund</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      const f = readForm(root);
+      const body = { merchantId: m.id, orderId: order.id, reason: f.reason };
+      if (f.amount) body.amount = f.amount;
+      try {
+        const out = await api('/api/merchants/refund', body);
+        closeSheet();
+        toast(`${out.amountLabel} refunded.`);
+        const me = await api('/api/me'); user = me.user; paintUser(); loadHistory();
+        sheetBusiness();
+      } catch (err) {
+        const msg = $('#msg', root); msg.textContent = err.message; msg.hidden = false;
+      }
     });
   });
 }
@@ -841,6 +943,11 @@ function sheetBusinessSettings(m) {
         <option value="dark"${m.theme === 'dark' ? ' selected' : ''}>Dark</option>
         <option value="light"${m.theme === 'light' ? ' selected' : ''}>Light</option>
       </select></label>
+    <label class="field"><span>Email me when money arrives</span>
+      <select name="notifyEmail">
+        <option value="yes"${m.notifyEmail !== false ? ' selected' : ''}>Yes</option>
+        <option value="no"${m.notifyEmail === false ? ' selected' : ''}>No</option>
+      </select></label>
     <label class="field"><span>Webhook URL (https, optional)</span>
       <input name="webhookUrl" placeholder="https://yoursite.com/lsp-webhook" value="${escapeHtml(m.webhookUrl || '')}" /></label>
     <span class="field"><span>Payment methods</span></span>
@@ -864,7 +971,9 @@ function sheetBusinessSettings(m) {
       const methods = [...root.querySelectorAll('[data-method][aria-pressed="true"]')].map((b) => b.dataset.method);
       const f = readForm(root);
       try {
-        await api('/api/merchants/update', { merchantId: m.id, ...f, methods });
+        await api('/api/merchants/update', {
+          merchantId: m.id, ...f, methods, notifyEmail: f.notifyEmail !== 'no'
+        });
         closeSheet();
         toast('Gateway updated.');
         sheetBusiness();

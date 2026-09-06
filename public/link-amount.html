@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Enter an amount · LSP-Pay</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+</head><body>
+<div style="max-width:440px;margin:0 auto;padding:52px 22px" id="root">
+  <p style="color:var(--mist)">Loading…</p>
+</div>
+<script>
+const id = location.pathname.split('/').filter(Boolean).pop();
+const root = document.getElementById('root');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+fetch('/api/links/' + id).then(r => r.json()).then(l => {
+  if (l.error) return root.innerHTML = '<p>' + esc(l.error) + '</p>';
+  document.documentElement.setAttribute('data-theme', l.merchant.theme === 'light' ? 'light' : 'dark');
+
+  const logo = l.merchant.logoUrl
+    ? '<img src="' + esc(l.merchant.logoUrl) + '" alt="" style="width:46px;height:46px;border-radius:11px;object-fit:contain;border:1px solid var(--line)" />'
+    : '<div style="width:46px;height:46px;border-radius:11px;display:grid;place-items:center;border:1px solid var(--line);font-family:var(--serif);font-size:22px;color:var(--brass)">' + esc(l.merchant.name[0]) + '</div>';
+
+  root.innerHTML =
+    '<div style="display:flex;align-items:center;gap:13px;padding-bottom:20px;border-bottom:1px solid var(--line)">' + logo +
+    '<div><div style="font-size:16px;font-weight:500">' + esc(l.merchant.name) + '</div>' +
+    '<div style="color:var(--mist);font-size:12.5px;margin-top:2px">' + esc(l.title) + '</div></div></div>' +
+    (l.description ? '<p style="color:var(--mist);font-size:14.5px;line-height:1.6;margin:20px 0 0">' + esc(l.description) + '</p>' : '') +
+    '<label class="field" style="margin-top:26px"><span>How much would you like to pay?</span>' +
+    '<input id="amt" type="number" inputmode="decimal" min="' + l.min + '" step="0.01" placeholder="0.00" /></label>' +
+    '<button id="go" class="btn-primary">Continue</button>' +
+    '<p class="msg" id="msg" hidden></p>';
+
+  document.getElementById('go').addEventListener('click', () => {
+    const v = Number(document.getElementById('amt').value);
+    const msg = document.getElementById('msg');
+    if (!(v >= l.min) || v > l.max) {
+      msg.textContent = 'Enter an amount between ₹' + l.min + ' and ₹' + l.max + '.';
+      msg.hidden = false; return;
+    }
+    location.href = '/l/' + id + '?amount=' + v;
+  });
+});
+</script>
+</body></html>

@@ -45,6 +45,10 @@ Send the customer to the `checkoutUrl` that comes back, then confirm the result 
 
 Never trust the customer's browser to tell you a payment succeeded. Check the API.
 
+**Also in the gateway:** refunds (full or partial, back to the payer's wallet where possible), shareable payment links that work like Razorpay's payment pages, `Idempotency-Key` support so a retried request never double-charges, webhook retries with backoff, a settlement summary and a CSV export.
+
+**Emails.** Add `"notify": true` and a `customer_email` when creating an order and the customer is emailed the payment link with a Pay button — Razorpay's Payment Links, essentially, so you can charge someone without having a website at all. They also get a receipt once paid, and you get an alert when money arrives. `POST /api/v1/orders/:id/notify` sends the link again. All of it goes through Resend, so verify a domain there before emailing real customers.
+
 ## 1. Get a Resend API key
 
 1. Sign up at [resend.com](https://resend.com) and open **API Keys → Create API Key**.

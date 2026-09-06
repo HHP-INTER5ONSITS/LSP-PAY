@@ -118,17 +118,82 @@ app.post('/lsp-webhook',
   -u "lsp_test_xxxxx:lsps_xxxxx"</code></pre>
   <p>Trust <code>status</code>, never the customer's browser. A customer landing on your success page proves nothing — only the API does.</p>
 
+  <h2>Emails</h2>
+  <p>Four emails go out through Resend, all carrying your business name and logo.</p>
+  <table>
+    <tr><th>Payment link</th><td>To the customer, when you create an order with <code>"notify": true</code> and a <code>customer_email</code>. Contains a Pay button.</td></tr>
+    <tr><th>Receipt</th><td>To the customer, automatically, once they pay.</td></tr>
+    <tr><th>Payment received</th><td>To you, whenever money lands. Switch it off under gateway settings.</td></tr>
+    <tr><th>Gift card</th><td>To the recipient, when someone buys one in the app.</td></tr>
+  </table>
+
+  <h3>Emailing a payment link</h3>
+  <p>Same as Razorpay's Payment Links: no website needed, the customer pays from their inbox.</p>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/orders \
+  -u "lsp_test_xxxxx:lsps_xxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 449,
+    "description": "Filter coffee, 250g",
+    "customer_email": "buyer@example.com",
+    "notify": true,
+    "note": "Thanks for your order!"
+  }'</code></pre>
+  <p>The response carries <code>emailed: true</code> when it went out, or <code>emailNote</code> explaining why it didn't. To send it again later:</p>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/orders/ord_xxx/notify \
+  -u "lsp_test_xxxxx:lsps_xxxxx" \
+  -H "Content-Type: application/json" -d '{}'</code></pre>
+  <div class="warn"><strong>Resend's sending limits apply.</strong> Until you verify your own domain, Resend only delivers to the address you signed up with — every other recipient silently fails. Add a domain in Resend and set <code>MAIL_FROM</code> before emailing real customers.</div>
+
   <h2>Order statuses</h2>
   <table>
     <tr><th>created</th><td>Waiting to be paid.</td></tr>
     <tr><th>paid</th><td>Money is in your LSP-Pay wallet. Fulfil the order.</td></tr>
     <tr><th>awaiting_cash</th><td>Customer chose cash. Nothing collected yet.</td></tr>
     <tr><th>expired</th><td>Nobody paid within 30 minutes.</td></tr>
+    <tr><th>refunded</th><td>The full amount went back to the customer.</td></tr>
   </table>
 
   <h3>Confirming a cash order</h3>
   <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/orders/ord_xxx/collect \
   -u "lsp_test_xxxxx:lsps_xxxxx"</code></pre>
+
+  <h2>Refunds</h2>
+  <p>Full or partial, as many times as you like until the order is used up. The money comes out of your LSP-Pay wallet, so it fails if you've already spent it — same as a real gateway with an empty settlement account.</p>
+  <pre><code># everything
+curl -X POST https://YOUR-APP.onrender.com/api/v1/orders/ord_xxx/refund \
+  -u "lsp_test_xxxxx:lsps_xxxxx" -H "Content-Type: application/json" -d '{}'
+
+# part of it
+curl -X POST https://YOUR-APP.onrender.com/api/v1/orders/ord_xxx/refund \
+  -u "lsp_test_xxxxx:lsps_xxxxx" -H "Content-Type: application/json" \
+  -d '{"amount": 200, "reason": "Item out of stock"}'</code></pre>
+  <p>If the customer paid from an LSP-Pay wallet, the refund lands back in that same wallet. The customer is emailed either way, a <code>order.refunded</code> webhook fires, and <code>GET /api/v1/orders/:id/refunds</code> lists them. An order becomes <code>refunded</code> once the full amount is back. Refunding from the app works too: <strong>Business gateway → tap Refund</strong> next to any paid order.</p>
+
+  <h2>Shareable payment links</h2>
+  <p>PayU and Razorpay both call these payment pages: one URL you reuse forever instead of an API call per customer. Put it in a bio, a WhatsApp message or a printed QR code. Each visit mints its own order, so two people paying at once never collide.</p>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/links \
+  -u "lsp_test_xxxxx:lsps_xxxxx" -H "Content-Type: application/json" \
+  -d '{"title": "Coffee subscription", "amount": 250, "usageLimit": 100, "expiresInDays": 30}'</code></pre>
+  <p>Leave <code>amount</code> out and the payer names their own figure — useful for tips and donations. <code>usageLimit</code> and <code>expiresInDays</code> are both optional. <code>POST /api/v1/links/:id/deactivate</code> switches one off, and <code>GET /api/v1/links</code> lists them. You can also make them in the app with no key at all: <strong>Business gateway → Shareable payment links</strong>.</p>
+
+  <h2>Idempotency</h2>
+  <p>Send an <code>Idempotency-Key</code> header when creating an order. If the request is retried — dropped connection, impatient customer, a queue redelivering — you get the original order back instead of a second charge.</p>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/orders \
+  -u "lsp_test_xxxxx:lsps_xxxxx" \
+  -H "Idempotency-Key: your-cart-8821" \
+  -H "Content-Type: application/json" -d '{"amount": 499}'</code></pre>
+  <p>Use something tied to the thing being bought, like your own cart or invoice id — not a random value, which would defeat the point.</p>
+
+  <h2>Webhook retries</h2>
+  <p>If your server doesn't answer <code>2xx</code>, we retry after 10 seconds, then 1 minute, 5 minutes, 30 minutes and 2 hours, then stop. Each attempt carries <code>X-LSP-Delivery</code> (same id every time) and <code>X-LSP-Attempt</code>. Because a retry can arrive twice, make your handler idempotent — check whether you've already shipped before shipping again.</p>
+
+  <h2>Reporting</h2>
+  <pre><code># totals: collected, refunded, net, pending, and a split by method
+curl https://YOUR-APP.onrender.com/api/v1/summary -u "lsp_test_xxxxx:lsps_xxxxx"
+
+# every order as CSV, for your accountant
+curl https://YOUR-APP.onrender.com/api/v1/orders.csv -u "lsp_test_xxxxx:lsps_xxxxx" -o orders.csv</code></pre>
 
   <h2>Testing</h2>
   <table>

@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS merchants (
   theme         TEXT NOT NULL DEFAULT 'dark',
   methods       TEXT NOT NULL DEFAULT 'upi,card,netbanking',
   webhook_url   TEXT,
+  notify_email  INTEGER NOT NULL DEFAULT 1,
   webhook_secret TEXT,
   key_id        TEXT NOT NULL UNIQUE,
   secret_hash   TEXT NOT NULL,
@@ -99,7 +100,10 @@ CREATE TABLE IF NOT EXISTS orders (
   description   TEXT,
   reference     TEXT,
   customer_email TEXT,
-  status        TEXT NOT NULL DEFAULT 'created',  -- created | paid | awaiting_cash | failed | expired
+  status        TEXT NOT NULL DEFAULT 'created',  -- created | paid | awaiting_cash | failed | expired | refunded
+  refunded_p    INTEGER NOT NULL DEFAULT 0,
+  link_id       TEXT,
+  idem_key      TEXT,
   method        TEXT,
   payer_note    TEXT,
   auth_code     TEXT,
@@ -108,6 +112,51 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_orders_merchant ON orders(merchant_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_idem ON orders(merchant_id, idem_key) WHERE idem_key IS NOT NULL;
+
+-- A link that can be shared and paid more than once: Razorpay's Payment
+-- Pages. amount_p NULL means the payer chooses the amount.
+CREATE TABLE IF NOT EXISTS payment_links (
+  id           TEXT PRIMARY KEY,
+  merchant_id  INTEGER NOT NULL REFERENCES merchants(id),
+  title        TEXT NOT NULL,
+  description  TEXT,
+  amount_p     INTEGER,
+  min_p        INTEGER NOT NULL DEFAULT 100,
+  max_p        INTEGER NOT NULL DEFAULT 20000000,
+  usage_limit  INTEGER,
+  used_count   INTEGER NOT NULL DEFAULT 0,
+  active       INTEGER NOT NULL DEFAULT 1,
+  expires_at   INTEGER,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_links_merchant ON payment_links(merchant_id);
+
+CREATE TABLE IF NOT EXISTS refunds (
+  id           TEXT PRIMARY KEY,
+  order_id     TEXT NOT NULL REFERENCES orders(id),
+  merchant_id  INTEGER NOT NULL REFERENCES merchants(id),
+  amount_p     INTEGER NOT NULL,
+  reason       TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_refunds_order ON refunds(order_id);
+
+-- Queued webhook attempts, so a merchant's server being briefly down does
+-- not lose the notification.
+CREATE TABLE IF NOT EXISTS webhook_jobs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id  INTEGER NOT NULL REFERENCES merchants(id),
+  url          TEXT NOT NULL,
+  event        TEXT NOT NULL,
+  payload      TEXT NOT NULL,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  next_at      INTEGER NOT NULL,
+  delivered    INTEGER NOT NULL DEFAULT 0,
+  last_error   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_pending ON webhook_jobs(delivered, next_at);
 
 CREATE TABLE IF NOT EXISTS gift_cards (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -119,4 +119,64 @@ async function sendReceipt(to, { title, amountLabel, reference, detail, balanceL
   });
 }
 
-module.exports = { send, sendLoginCode, sendPinChangeCode, sendGiftCard, sendReceipt };
+/** Sends a customer the checkout link for an unpaid order. */
+async function sendPaymentLink(to, { merchant, amountLabel, description, checkoutUrl, logoUrl, note }) {
+  const button = `
+    <a href="${checkoutUrl}" style="display:inline-block;margin:8px 0 18px;padding:14px 26px;background:#D9A441;color:#241A05;font-size:16px;font-weight:600;text-decoration:none;border-radius:12px;">
+      Pay ${amountLabel}
+    </a>`;
+
+  return send({
+    to,
+    subject: `${merchant} is requesting ${amountLabel}`,
+    html: shell(
+      `${merchant} would like ${amountLabel}`,
+      (logoUrl ? `<img src="${logoUrl}" alt="" style="max-height:44px;margin:0 0 16px;border-radius:8px;" />` : '') +
+        (description ? p(description) : '') +
+        (note ? p(note) : '') +
+        button +
+        p('This link works for 30 minutes and can only be used once.') +
+        `<p style="margin:0;color:#6E6987;font-size:12px;word-break:break-all;">${checkoutUrl}</p>`
+    )
+  });
+}
+
+/** Tells a business their money arrived. */
+async function sendMerchantAlert(to, { merchant, amountLabel, method, orderId, description }) {
+  const row = (k, v) =>
+    `<tr><td style="padding:9px 0;color:#8E89A6;font-size:14px;">${k}</td><td style="padding:9px 0;color:#F2EEE6;font-size:14px;text-align:right;">${v}</td></tr>`;
+
+  return send({
+    to,
+    subject: `${amountLabel} received — ${merchant}`,
+    html: shell(
+      'Payment received',
+      `<div style="margin:0 0 18px;color:#F2EEE6;font-size:32px;font-weight:600;">${amountLabel}</div>` +
+        `<table style="width:100%;border-collapse:collapse;border-top:1px solid #2E2A45;">
+          ${row('Gateway', merchant)}
+          ${description ? row('For', description) : ''}
+          ${row('Method', method || '—')}
+          ${row('Order', orderId)}
+        </table>` +
+        p('It has been added to your LSP-Pay balance.')
+    )
+  });
+}
+
+
+/** Tells a customer their money is coming back. */
+async function sendRefundNotice(to, { merchant, amountLabel, orderId, reason }) {
+  return send({
+    to,
+    subject: `${amountLabel} refunded — ${merchant}`,
+    html: shell(
+      'Refund issued',
+      `<div style="margin:0 0 18px;color:#F2EEE6;font-size:32px;font-weight:600;">${amountLabel}</div>` +
+        p(`${merchant} has refunded this payment.`) +
+        (reason ? p(`Reason: ${reason}`) : '') +
+        p(`Order ${orderId}`)
+    )
+  });
+}
+
+module.exports = { send, sendLoginCode, sendPinChangeCode, sendGiftCard, sendReceipt, sendPaymentLink, sendMerchantAlert, sendRefundNotice };
