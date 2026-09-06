@@ -179,4 +179,16 @@ async function sendRefundNotice(to, { merchant, amountLabel, orderId, reason }) 
   });
 }
 
-module.exports = { send, sendLoginCode, sendPinChangeCode, sendGiftCard, sendReceipt, sendPaymentLink, sendMerchantAlert, sendRefundNotice };
+async function sendMoneyRequest(to, { who, amountLabel, note }) {
+  return send({
+    to,
+    subject: `${who} is requesting ${amountLabel}`,
+    html: shell(
+      `${who} asked you for ${amountLabel}`,
+      (note ? p(`&ldquo;${note}&rdquo;`) : '') +
+        p('Open LSP-Pay to pay it or turn it down. Nothing is taken from your balance until you approve.')
+    )
+  });
+}
+
+module.exports = { send, sendLoginCode, sendPinChangeCode, sendGiftCard, sendReceipt, sendPaymentLink, sendMerchantAlert, sendRefundNotice, sendMoneyRequest };

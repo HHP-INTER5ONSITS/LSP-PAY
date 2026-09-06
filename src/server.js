@@ -132,6 +132,9 @@ function publicUser(u) {
   return {
     email: u.email,
     handle: u.handle,
+    displayName: u.display_name,
+    name: u.display_name || u.handle,
+    dailyLimit: u.daily_limit_p ? u.daily_limit_p / 100 : null,
     balance: u.balance_p / 100,
     balanceLabel: inr(u.balance_p),
     points: u.points,
@@ -255,6 +258,14 @@ function amountCheck(raw, { min = 1, max = 200000 } = {}) {
 async function runPayment(req, res, { amountP, kind, title, detail, payee, payeeTitle, receiptTitle }) {
   const pinResult = checkPin(req.user, req.body.pin);
   if (!pinResult.ok) return fail(res, 403, pinResult.message);
+
+  // A self-imposed daily cap. Card payments count too — the point is to
+  // limit spending, not just wallet drawdown.
+  if (req.user.daily_limit_p) {
+    const already = spentToday(req.user.id);
+    if (already + amountP > req.user.daily_limit_p)
+      return fail(res, 403, `That would pass your daily limit of ${inr(req.user.daily_limit_p)}. You have ${inr(Math.max(0, req.user.daily_limit_p - already))} left today.`);
+  }
 
   // Optional: pay straight from a saved card instead of the wallet.
   let card = null;
@@ -401,8 +412,8 @@ app.post('/api/pay/provider', auth, payLimiter, async (req, res) => {
 app.get('/api/directory', auth, (req, res) => {
   const q = `%${String(req.query.q || '').trim().toLowerCase()}%`;
   const rows = db
-    .prepare('SELECT email, handle FROM users WHERE id != ? AND (email LIKE ? OR handle LIKE ?) LIMIT 8')
-    .all(req.user.id, q, q);
+    .prepare('SELECT email, handle, display_name FROM users WHERE id != ? AND (email LIKE ? OR handle LIKE ? OR display_name LIKE ?) LIMIT 8')
+    .all(req.user.id, q, q, q);
   res.json({ people: rows });
 });
 
@@ -417,14 +428,20 @@ app.post('/api/pay/user', auth, payLimiter, async (req, res) => {
   const amt = amountCheck(req.body.amount);
   if (!amt.ok) return fail(res, 400, amt.message);
 
+  // Paying someone clears any pending request they sent you.
+  const pending = db
+    .prepare("SELECT id FROM requests WHERE from_id = ? AND to_id = ? AND status = 'pending' AND amount_p = ? ORDER BY id DESC LIMIT 1")
+    .get(payee.id, req.user.id, amt.amountP);
+  if (pending) db.prepare("UPDATE requests SET status = 'paid' WHERE id = ?").run(pending.id);
+
   const note = String(req.body.note || '').slice(0, 80);
   return runPayment(req, res, {
     amountP: amt.amountP,
     kind: 'send',
-    title: `Paid ${payee.handle}`,
+    title: `Paid ${payee.display_name || payee.handle}`,
     detail: note || null,
     payee,
-    payeeTitle: `Received from ${req.user.handle}`,
+    payeeTitle: `Received from ${req.user.display_name || req.user.handle}`,
     receiptTitle: `${payee.handle} (${payee.email})`
   });
 });
@@ -722,6 +739,153 @@ app.get('/api/transactions', auth, (req, res) => {
       createdAt: t.created_at
     }))
   });
+});
+
+/* ------------------------------------------------- profile & safeguards */
+
+app.post('/api/profile', auth, (req, res) => {
+  const name = String(req.body.displayName || '').trim().slice(0, 40);
+  if (name && name.length < 2) return fail(res, 400, 'Use at least two characters, or leave it empty.');
+
+  let limitP = null;
+  if (req.body.dailyLimit !== undefined && req.body.dailyLimit !== '' && req.body.dailyLimit !== null) {
+    const rupees = Number(req.body.dailyLimit);
+    if (!Number.isFinite(rupees) || rupees <= 0) return fail(res, 400, 'The daily limit must be a positive amount.');
+    limitP = paise(rupees);
+  }
+
+  db.prepare('UPDATE users SET display_name = ?, daily_limit_p = ? WHERE id = ?')
+    .run(name || null, limitP, req.user.id);
+
+  res.json({ ok: true, user: publicUser(findUserById.get(req.user.id)) });
+});
+
+/** Total spent since midnight, used to enforce the daily limit. */
+function spentToday(userId) {
+  return db
+    .prepare(
+      `SELECT COALESCE(SUM(amount_p), 0) t FROM transactions
+       WHERE user_id = ? AND direction = 'debit' AND created_at >= date('now')`
+    )
+    .get(userId).t;
+}
+
+app.get('/api/analytics', auth, (req, res) => {
+  const byKind = db
+    .prepare(
+      `SELECT kind, COUNT(*) n, SUM(amount_p) t FROM transactions
+       WHERE user_id = ? AND direction = 'debit' AND created_at >= date('now','start of month')
+       GROUP BY kind ORDER BY t DESC`
+    )
+    .all(req.user.id);
+
+  const month = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN direction='debit' THEN amount_p END),0) out_p,
+         COALESCE(SUM(CASE WHEN direction='credit' THEN amount_p END),0) in_p
+       FROM transactions WHERE user_id = ? AND created_at >= date('now','start of month')`
+    )
+    .get(req.user.id);
+
+  const LABELS = {
+    send: 'People', provider: 'Providers', mobile: 'Mobile', fastag: 'FASTag',
+    giftcard: 'Gift cards', topup: 'Top-ups', receive: 'Received'
+  };
+
+  res.json({
+    spentLabel: inr(month.out_p),
+    receivedLabel: inr(month.in_p),
+    todayLabel: inr(spentToday(req.user.id)),
+    limitLabel: req.user.daily_limit_p ? inr(req.user.daily_limit_p) : null,
+    byKind: byKind.map((r) => ({ kind: LABELS[r.kind] || r.kind, count: r.n, label: inr(r.t), amount: r.t / 100 }))
+  });
+});
+
+/** Your own statement, as CSV. */
+app.get('/api/statement.csv', auth, (req, res) => {
+  const rows = db
+    .prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5000')
+    .all(req.user.id);
+  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+
+  const csv = [
+    'date,type,direction,amount_inr,points,title,detail,reference',
+    ...rows.map((t) =>
+      [t.created_at, t.kind, t.direction, (t.amount_p / 100).toFixed(2), t.points, t.title, t.detail, t.reference]
+        .map(cell).join(',')
+    )
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="lsp-statement-${Date.now()}.csv"`);
+  res.send(csv);
+});
+
+/* ------------------------------------------------------- money requests */
+
+app.get('/api/requests', auth, (req, res) => {
+  const incoming = db
+    .prepare(
+      `SELECT r.*, u.email, u.handle, u.display_name FROM requests r
+       JOIN users u ON u.id = r.from_id
+       WHERE r.to_id = ? AND r.status = 'pending' ORDER BY r.id DESC LIMIT 20`
+    )
+    .all(req.user.id);
+
+  const outgoing = db
+    .prepare(
+      `SELECT r.*, u.email, u.handle, u.display_name FROM requests r
+       JOIN users u ON u.id = r.to_id
+       WHERE r.from_id = ? ORDER BY r.id DESC LIMIT 20`
+    )
+    .all(req.user.id);
+
+  const shape = (r) => ({
+    id: r.id,
+    amountLabel: inr(r.amount_p),
+    amount: r.amount_p / 100,
+    note: r.note,
+    status: r.status,
+    who: r.display_name || r.handle,
+    email: r.email,
+    createdAt: r.created_at
+  });
+
+  res.json({ incoming: incoming.map(shape), outgoing: outgoing.map(shape) });
+});
+
+app.post('/api/requests', auth, payLimiter, async (req, res) => {
+  const to = normEmail(req.body.to);
+  if (!validEmail(to)) return fail(res, 400, 'Enter their email address.');
+  if (to === req.user.email) return fail(res, 400, 'You cannot request money from yourself.');
+
+  const target = findUserByEmail.get(to);
+  if (!target) return fail(res, 404, 'Nobody uses LSP-Pay with that email yet.');
+
+  const amt = amountCheck(req.body.amount);
+  if (!amt.ok) return fail(res, 400, amt.message);
+
+  const note = String(req.body.note || '').slice(0, 80) || null;
+  db.prepare('INSERT INTO requests (from_id, to_id, amount_p, note) VALUES (?, ?, ?, ?)')
+    .run(req.user.id, target.id, amt.amountP, note);
+
+  mail
+    .sendMoneyRequest(target.email, {
+      who: req.user.display_name || req.user.handle,
+      amountLabel: inr(amt.amountP),
+      note
+    })
+    .catch((e) => console.error('[mail] request failed:', e.message));
+
+  res.json({ ok: true });
+});
+
+app.post('/api/requests/decline', auth, (req, res) => {
+  const row = db.prepare('SELECT * FROM requests WHERE id = ? AND to_id = ?').get(Number(req.body.id), req.user.id);
+  if (!row) return fail(res, 404, 'No such request.');
+  db.prepare("UPDATE requests SET status = 'declined' WHERE id = ?").run(row.id);
+  res.json({ ok: true });
 });
 
 /* ------------------------------------------------------------- gateway */

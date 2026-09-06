@@ -125,33 +125,52 @@ function paintUser() {
   el('balance-amount').textContent = Number(user.balance).toLocaleString('en-IN', {
     minimumFractionDigits: 2, maximumFractionDigits: 2
   });
-  el('user-handle').textContent = user.email;
+  el('user-handle').textContent = user.name || user.email;
   el('points-chip').textContent = `${user.points.toLocaleString('en-IN')} points`;
+}
+
+let allTx = [];
+
+function paintHistory() {
+  const list = el('tx-list');
+  const q = (el('tx-search')?.value || '').toLowerCase();
+  const kind = el('tx-filter')?.value || '';
+
+  const rows = allTx.filter((t) => {
+    if (kind === 'in' && t.direction !== 'credit') return false;
+    if (kind === 'out' && t.direction !== 'debit') return false;
+    if (kind && kind !== 'in' && kind !== 'out' && t.kind !== kind) return false;
+    if (!q) return true;
+    return [t.title, t.detail, t.reference, t.amountLabel].join(' ').toLowerCase().includes(q);
+  });
+
+  if (!rows.length) {
+    list.innerHTML = `<p class="empty">${allTx.length ? 'Nothing matches that.' : 'Nothing yet. Your payments, recharges and gift cards will show up here.'}</p>`;
+    return;
+  }
+
+  list.innerHTML = rows.map((t) => {
+    const when = new Date(t.createdAt.replace(' ', 'T') + 'Z').toLocaleString('en-IN', {
+      day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
+    });
+    const bits = [when, t.detail, t.points ? `+${t.points} points` : null].filter(Boolean);
+    return `<div class="tx">
+      <div class="tx-main">
+        <div class="tx-title">${escapeHtml(t.title)}</div>
+        <div class="tx-sub">${escapeHtml(bits.join(' · '))}</div>
+      </div>
+      <div class="tx-amt ${t.direction === 'credit' ? 'credit' : ''}">${escapeHtml(t.amountLabel)}</div>
+    </div>`;
+  }).join('');
 }
 
 async function loadHistory() {
   const list = el('tx-list');
   try {
     const { transactions } = await api('/api/transactions');
-    if (!transactions.length) {
-      list.innerHTML = '<p class="empty">Nothing yet. Your payments, recharges and gift cards will show up here.</p>';
-      return;
-    }
-    list.innerHTML = transactions
-      .map((t) => {
-        const when = new Date(t.createdAt.replace(' ', 'T') + 'Z').toLocaleString('en-IN', {
-          day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
-        });
-        const bits = [when, t.detail, t.points ? `+${t.points} points` : null].filter(Boolean);
-        return `<div class="tx">
-          <div class="tx-main">
-            <div class="tx-title">${escapeHtml(t.title)}</div>
-            <div class="tx-sub">${escapeHtml(bits.join(' · '))}</div>
-          </div>
-          <div class="tx-amt ${t.direction === 'credit' ? 'credit' : ''}">${escapeHtml(t.amountLabel)}</div>
-        </div>`;
-      })
-      .join('');
+    allTx = transactions;
+    paintHistory();
+    return;
   } catch (err) {
     list.innerHTML = `<p class="empty">${escapeHtml(err.message)}</p>`;
   }
@@ -649,9 +668,20 @@ function sheetSettings() {
     <div class="kv"><span>Balance</span><span>${escapeHtml(user.balanceLabel)}</span></div>
     <div class="kv"><span>Points</span><span>${user.points.toLocaleString('en-IN')}</span></div>
     <div class="kv"><span>Payment PIN</span><span>${user.pinIsDefault ? 'Still 00000' : 'Set by you'}</span></div>
-    <button id="pin" class="btn-primary" style="margin-top:20px">Change payment PIN</button>
+    <label class="field" style="margin-top:20px"><span>Display name</span>
+      <input name="displayName" maxlength="40" value="${escapeHtml(user.displayName || '')}" placeholder="How others see you" /></label>
+    <label class="field"><span>Daily spending limit in rupees (optional)</span>
+      <input name="dailyLimit" type="number" min="1" step="1" value="${user.dailyLimit || ''}" placeholder="No limit" /></label>
+    <button id="save" class="btn-primary">Save profile</button>
+    <button id="pin" class="btn-quiet">Change payment PIN</button>
     <button id="out" class="btn-quiet">Sign out</button>
   `, (root) => {
+    $('#save', root).addEventListener('click', async () => {
+      try {
+        const out = await api('/api/profile', readForm(root));
+        user = out.user; paintUser(); closeSheet(); toast('Profile saved.');
+      } catch (err) { toast(err.message, true); }
+    });
     $('#pin', root).addEventListener('click', sheetChangePin);
     $('#out', root).addEventListener('click', async () => {
       await api('/api/auth/logout', {});
@@ -695,6 +725,101 @@ function sheetChangePin() {
   });
 }
 
+/* ───────────────────────── requests & insights ────────────────────────── */
+
+async function sheetRequest() {
+  const { incoming, outgoing } = await api('/api/requests');
+
+  openSheet('Request money', `
+    ${incoming.length ? `<h3 class="section-title" style="margin-top:0">Waiting on you</h3>
+      <div class="picker">${incoming.map((r) => `
+        <div class="pick" style="cursor:default">
+          <span><strong>${escapeHtml(r.amountLabel)} to ${escapeHtml(r.who)}</strong>
+            <small>${escapeHtml(r.note || 'No note')}</small></span>
+          <span style="display:flex;gap:10px">
+            <button class="btn-link" data-pay="${r.id}" data-email="${escapeHtml(r.email)}" data-amt="${r.amount}">Pay</button>
+            <button class="btn-link" data-decline="${r.id}">No</button>
+          </span>
+        </div>`).join('')}</div>` : ''}
+
+    <h3 class="section-title"${incoming.length ? '' : ' style="margin-top:0"'}>Ask someone</h3>
+    <label class="field"><span>Their email address</span>
+      <input name="to" type="email" placeholder="friend@example.com" /></label>
+    <label class="field"><span>Amount in rupees</span>
+      <input name="amount" type="number" inputmode="decimal" min="1" step="0.01" placeholder="0.00" /></label>
+    <label class="field"><span>What for (optional)</span>
+      <input name="note" maxlength="80" placeholder="Dinner on Friday" /></label>
+    <button id="go" class="btn-primary">Send the request</button>
+    <p id="msg" class="msg" hidden></p>
+
+    ${outgoing.length ? `<h3 class="section-title">You asked for</h3>
+      ${outgoing.map((r) => `<div class="kv"><span>${escapeHtml(r.amountLabel)} from ${escapeHtml(r.who)}</span><span>${escapeHtml(r.status)}</span></div>`).join('')}` : ''}
+  `, (root) => {
+    root.querySelectorAll('[data-pay]').forEach((b) =>
+      b.addEventListener('click', () => {
+        closeSheet();
+        confirmWithPin({
+          amountLabel: money(b.dataset.amt),
+          to: `To ${b.dataset.email}`,
+          submit: (pin, cardId) => api('/api/pay/user', { to: b.dataset.email, amount: b.dataset.amt, pin, cardId }),
+          onDone: (out) => showSuccess({
+            amountLabel: out.amountLabel,
+            headline: `Paid ${b.dataset.email}`,
+            rows: [['Reference', out.reference], ['Points earned', `+${out.points}`]]
+          })
+        });
+      })
+    );
+
+    root.querySelectorAll('[data-decline]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        await api('/api/requests/decline', { id: Number(b.dataset.decline) });
+        toast('Request turned down.');
+        sheetRequest();
+      })
+    );
+
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        await api('/api/requests', readForm(root));
+        closeSheet();
+        toast('Request sent.');
+      } catch (err) {
+        const msg = $('#msg', root); msg.textContent = err.message; msg.hidden = false;
+      }
+    });
+  });
+}
+
+async function sheetInsights() {
+  const a = await api('/api/analytics');
+  const top = a.byKind[0]?.amount || 1;
+
+  openSheet('Spending this month', `
+    <div class="stat-grid">
+      <div class="stat"><div class="n">${escapeHtml(a.spentLabel)}</div><div class="l">Out this month</div></div>
+      <div class="stat"><div class="n">${escapeHtml(a.receivedLabel)}</div><div class="l">In this month</div></div>
+      <div class="stat"><div class="n">${escapeHtml(a.todayLabel)}</div><div class="l">Spent today</div></div>
+      <div class="stat"><div class="n">${escapeHtml(a.limitLabel || 'None')}</div><div class="l">Daily limit</div></div>
+    </div>
+
+    ${a.byKind.length ? a.byKind.map((k) => `
+      <div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px">
+          <span>${escapeHtml(k.kind)}</span><span>${escapeHtml(k.label)}</span>
+        </div>
+        <div style="height:6px;background:var(--line);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${Math.max(3, Math.round((k.amount / top) * 100))}%;background:var(--brass)"></div>
+        </div>
+      </div>`).join('')
+      : '<p class="empty">Nothing spent yet this month.</p>'}
+
+    <button id="export" class="btn-quiet">Download full statement</button>
+  `, (root) => {
+    $('#export', root).addEventListener('click', () => window.open('/api/statement.csv', '_blank'));
+  });
+}
+
 /* ─────────────────────────── 8. business gateway ─────────────────────── */
 
 async function sheetBusiness() {
@@ -717,11 +842,14 @@ async function sheetBusiness() {
     });
   }
 
-  const m = merchants[0];
+  const m = merchants.find((x) => x.id === window.__lspGateway) || merchants[0];
+  window.__lspGateway = m.id;
   const { orders } = await api(`/api/merchants/orders?merchantId=${m.id}`);
   const sum = await api(`/api/merchants/summary?merchantId=${m.id}`);
 
   openSheet(m.name, `
+    ${merchants.length > 1 ? `<label class="field"><span>Gateway</span>
+      <select id="switch">${merchants.map((x) => `<option value="${x.id}"${x.id === m.id ? ' selected' : ''}>${escapeHtml(x.name)}</option>`).join('')}</select></label>` : ''}
     <div class="kv"><span>Collected</span><span>${escapeHtml(sum.collectedLabel)} · ${sum.paidCount} paid</span></div>
     <div class="kv"><span>Refunded</span><span>${escapeHtml(sum.refundedLabel)} · ${sum.refundCount}</span></div>
     <div class="kv"><span>Net</span><span>${escapeHtml(sum.netLabel)}</span></div>
@@ -733,6 +861,8 @@ async function sheetBusiness() {
 
     <button id="test" class="btn-primary" style="margin-top:20px">Create a test order</button>
     <button id="links" class="btn-quiet">Shareable payment links</button>
+    <button id="customers" class="btn-quiet">Customers</button>
+    <button id="newgw" class="btn-quiet">Add another gateway</button>
     <button id="settings" class="btn-quiet">Logo, theme and methods</button>
     <button id="roll" class="btn-quiet">Reset API secret</button>
     <button id="docs" class="btn-quiet">API documentation</button>
@@ -750,6 +880,12 @@ async function sheetBusiness() {
   `, (root) => {
     $('#test', root).addEventListener('click', () => sheetTestOrder(m));
     $('#links', root).addEventListener('click', () => sheetLinks(m));
+    $('#customers', root).addEventListener('click', () => sheetCustomers(m));
+    $('#newgw', root).addEventListener('click', () => sheetNewGateway());
+    $('#switch', root)?.addEventListener('change', (e) => {
+      window.__lspGateway = Number(e.target.value);
+      sheetBusiness();
+    });
     root.querySelectorAll('[data-refund]').forEach((b) =>
       b.addEventListener('click', () => sheetRefund(m, orders.find((o) => o.id === b.dataset.refund)))
     );
@@ -811,7 +947,10 @@ async function sheetLinks(m) {
           <div class="pick" style="cursor:default">
             <span><strong>${escapeHtml(l.title)}</strong>
               <small>${escapeHtml(l.amountLabel)} · used ${l.usedCount}${l.usageLimit ? ' of ' + l.usageLimit : ''}${l.active ? '' : ' · off'}</small></span>
-            <button class="btn-link" data-copy="${escapeHtml(l.url)}">Copy</button>
+            <span style="display:flex;gap:10px">
+              <button class="btn-link" data-qr="${escapeHtml(l.id)}" data-title="${escapeHtml(l.title)}">QR</button>
+              <button class="btn-link" data-copy="${escapeHtml(l.url)}">Copy</button>
+            </span>
           </div>`).join('')}</div>`
       : '<p class="empty">No links yet.</p>'}
     <button id="add" class="btn-primary">Create a link</button>
@@ -820,6 +959,17 @@ async function sheetLinks(m) {
       b.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(b.dataset.copy); toast('Link copied.'); }
         catch { toast(b.dataset.copy, false); }
+      })
+    );
+    root.querySelectorAll('[data-qr]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const link = links.find((l) => l.id === b.dataset.qr);
+        openSheet(link.title, `
+          <img class="qr" src="/l/${escapeHtml(link.id)}/qr.svg" alt="QR code" />
+          <p class="sheet-note" style="text-align:center">Print it, or show it at a counter. Anyone who scans it pays ${escapeHtml(link.amountLabel)}.</p>
+          <div class="gift-code" style="font-size:12.5px;word-break:break-all;letter-spacing:0">${escapeHtml(link.url)}</div>
+          <button id="dl" class="btn-quiet">Open the QR on its own</button>
+        `, (r2) => $('#dl', r2).addEventListener('click', () => window.open(`/l/${link.id}/qr.svg`, '_blank')));
       })
     );
     $('#add', root).addEventListener('click', () => sheetNewLink(m));
@@ -847,6 +997,7 @@ function sheetNewLink(m) {
         openSheet('Your payment link', `
           <div class="summary"><div class="summary-amt">${escapeHtml(l.amountLabel)}</div>
             <div class="summary-to">${escapeHtml(l.title)}</div></div>
+          <img class="qr" src="/l/${escapeHtml(l.id)}/qr.svg" alt="QR code for this payment link" />
           <div class="gift-code" style="font-size:13px;word-break:break-all;letter-spacing:0">${escapeHtml(l.url)}</div>
           <button id="open" class="btn-primary">Open it</button>
           <button id="copy" class="btn-quiet">Copy the link</button>
@@ -886,6 +1037,39 @@ function sheetRefund(m, order) {
         toast(`${out.amountLabel} refunded.`);
         const me = await api('/api/me'); user = me.user; paintUser(); loadHistory();
         sheetBusiness();
+      } catch (err) {
+        const msg = $('#msg', root); msg.textContent = err.message; msg.hidden = false;
+      }
+    });
+  });
+}
+
+async function sheetCustomers(m) {
+  const { customers } = await api(`/api/merchants/customers?merchantId=${m.id}`);
+
+  openSheet('Customers', `
+    <p class="sheet-note">Everyone who has paid this gateway, biggest spender first.</p>
+    ${customers.length
+      ? customers.map((c) => `<div class="kv">
+          <span>${escapeHtml(c.who)}<br><small style="color:var(--mist)">${c.orders} order${c.orders === 1 ? '' : 's'}</small></span>
+          <span>${escapeHtml(c.totalLabel)}</span></div>`).join('')
+      : '<p class="empty">Nobody yet. Customers appear once an order carries an email or is paid from a wallet.</p>'}
+  `);
+}
+
+function sheetNewGateway() {
+  openSheet('Add a gateway', `
+    <p class="sheet-note">A second business, with its own name, logo, keys and orders. You can run up to three.</p>
+    <label class="field"><span>Business name</span>
+      <input name="name" maxlength="60" placeholder="Second shop" /></label>
+    <button id="go" class="btn-primary">Create it</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        const out = await api('/api/merchants', readForm(root));
+        window.__lspGateway = out.merchant.id;
+        showSecret(out.secret, out.warning, () => sheetBusiness());
       } catch (err) {
         const msg = $('#msg', root); msg.textContent = err.message; msg.hidden = false;
       }
@@ -1017,7 +1201,9 @@ const SHEETS = {
   gift: sheetGift,
   rewards: sheetRewards,
   cards: sheetCards,
-  business: sheetBusiness
+  business: sheetBusiness,
+  request: sheetRequest,
+  insights: sheetInsights
 };
 
 document.querySelectorAll('[data-open]').forEach((b) =>
@@ -1028,6 +1214,8 @@ document.querySelectorAll('[data-open]').forEach((b) =>
 );
 
 el('btn-settings').addEventListener('click', sheetSettings);
+['tx-search', 'tx-filter'].forEach((id) => el(id)?.addEventListener('input', paintHistory));
+el('tx-export')?.addEventListener('click', () => window.open('/api/statement.csv', '_blank'));
 
 (async function boot() {
   try {

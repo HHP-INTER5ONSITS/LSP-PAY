@@ -23,8 +23,22 @@ CREATE TABLE IF NOT EXISTS users (
   pin_salt     TEXT NOT NULL,
   balance_p    INTEGER NOT NULL DEFAULT 0,   -- balance in paise
   points       INTEGER NOT NULL DEFAULT 0,
+  display_name TEXT,
+  daily_limit_p INTEGER,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Money requests between people: "you owe me ₹400 for dinner".
+CREATE TABLE IF NOT EXISTS requests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_id      INTEGER NOT NULL REFERENCES users(id),
+  to_id        INTEGER NOT NULL REFERENCES users(id),
+  amount_p     INTEGER NOT NULL,
+  note         TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | declined
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_requests_to ON requests(to_id, status);
 
 CREATE TABLE IF NOT EXISTS otps (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

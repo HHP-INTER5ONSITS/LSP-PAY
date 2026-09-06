@@ -17,6 +17,7 @@
 
 const crypto = require('crypto');
 const path = require('path');
+const QRCode = require('qrcode');
 
 const ORDER_TTL_MS = 30 * 60 * 1000; // a checkout link is good for 30 minutes
 const ALL_METHODS = ['upi', 'card', 'netbanking', 'wallet', 'cash'];
@@ -921,6 +922,52 @@ module.exports = function mountGateway(app, deps) {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="lsp-orders-${Date.now()}.csv"`);
     res.send(csv);
+  });
+
+  /** A QR of a payment link, for a counter, a poster or an invoice. */
+  app.get('/l/:id/qr.svg', async (req, res) => {
+    const link = db.prepare('SELECT * FROM payment_links WHERE id = ?').get(req.params.id);
+    if (!link) return fail(res, 404, 'No such link.');
+
+    try {
+      const svg = await QRCode.toString(`${baseUrlOf(req)}/l/${link.id}`, {
+        type: 'svg',
+        margin: 1,
+        errorCorrectionLevel: 'M',
+        color: { dark: '#000000', light: '#FFFFFF' }
+      });
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.send(svg);
+    } catch (err) {
+      fail(res, 500, 'Could not draw the QR code.');
+    }
+  });
+
+  /** Who has paid this business, and how much, most valuable first. */
+  app.get('/api/merchants/customers', auth, (req, res) => {
+    const merchant = findMerchant.get(Number(req.query.merchantId), req.user.id);
+    if (!merchant) return fail(res, 404, 'No such gateway on your account.');
+
+    const rows = db
+      .prepare(
+        `SELECT COALESCE(customer_email, payer_note) who,
+                COUNT(*) n, SUM(amount_p) t, MAX(paid_at) last_at
+         FROM orders
+         WHERE merchant_id = ? AND status IN ('paid','refunded')
+           AND COALESCE(customer_email, payer_note) IS NOT NULL
+         GROUP BY who ORDER BY t DESC LIMIT 50`
+      )
+      .all(merchant.id);
+
+    res.json({
+      customers: rows.map((r) => ({
+        who: r.who,
+        orders: r.n,
+        totalLabel: inr(r.t),
+        lastAt: r.last_at
+      }))
+    });
   });
 
   app.get('/api/checkout/banks', (req, res) => res.json({ banks: BANKS }));

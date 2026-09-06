@@ -113,6 +113,14 @@
         <span class="glyph">✦</span>
         <span class="action-text"><strong>Buy a gift card</strong><small>8% off, delivered by email</small></span>
       </button>
+      <button class="action" data-open="request">
+        <span class="glyph">⇦</span>
+        <span class="action-text"><strong>Request money</strong><small>Ask someone to pay you</small></span>
+      </button>
+      <button class="action" data-open="insights">
+        <span class="glyph">◑</span>
+        <span class="action-text"><strong>Spending this month</strong><small>Where your money went</small></span>
+      </button>
       <button class="action" data-open="cards">
         <span class="glyph">▤</span>
         <span class="action-text"><strong>Cards and money</strong><small>Add money or pay by debit card</small></span>
@@ -129,6 +137,21 @@
 
     <section class="history">
       <h2 class="section-title">Activity</h2>
+      <div class="toolbar">
+        <input id="tx-search" placeholder="Search activity" />
+        <select id="tx-filter">
+          <option value="">Everything</option>
+          <option value="in">Money in</option>
+          <option value="out">Money out</option>
+          <option value="send">People</option>
+          <option value="provider">Providers</option>
+          <option value="mobile">Mobile</option>
+          <option value="fastag">FASTag</option>
+          <option value="giftcard">Gift cards</option>
+          <option value="topup">Top-ups</option>
+        </select>
+        <button id="tx-export" class="btn-link">Export CSV</button>
+      </div>
       <div id="tx-list" class="tx-list"></div>
     </section>
   </section>

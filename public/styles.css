@@ -564,3 +564,117 @@ input, select, textarea { font: inherit; color: inherit; }
   :root:not([data-theme='dark']) .icon-btn .moon { display: none; }
   :root:not([data-theme='dark']) .icon-btn .sun { display: block; }
 }
+
+/* ─────────────────────── desktop: a real two-pane app ─────────────────── */
+
+@media (min-width: 900px) {
+  .frame {
+    max-width: 1120px;
+    padding: 0;
+    border: none;
+    min-height: 100dvh;
+  }
+
+  /* sign-in stays a centred card — a full desktop chrome would be silly here */
+  #screen-auth { max-width: 440px; margin: 0 auto; padding: 30px 20px 60px; }
+
+  #screen-app:not([hidden]) {
+    display: grid;
+    grid-template-columns: 236px 1fr;
+    min-height: 100dvh;
+  }
+
+  /* left rail */
+  #screen-app > .top {
+    grid-row: 1 / -1;
+    grid-column: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 0;
+    padding: 26px 18px;
+    border-right: 1px solid var(--line);
+  }
+  #screen-app > .top .wordmark.small { font-size: 25px; margin-bottom: 4px; }
+  #screen-app > .top .head-tools { margin-top: auto; }
+
+  .actions {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    align-self: start;
+    margin: 92px 18px 0;
+    border-top: none;
+    z-index: 1;
+  }
+  .actions .action {
+    padding: 10px 12px;
+    border-bottom: none;
+    border-radius: 11px;
+    gap: 12px;
+  }
+  .actions .action:hover { background: var(--raised); }
+  .actions .glyph { width: 32px; height: 32px; font-size: 15px; border-radius: 9px; }
+  .actions .action-text strong { font-size: 14px; }
+  .actions .action-text small { display: none; }
+
+  /* right pane */
+  .balance {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 46px 44px 30px;
+    border-bottom: 1px solid var(--line);
+  }
+  .balance-figure { font-size: 68px; }
+  .balance-figure .rupee { font-size: 40px; }
+
+  .history {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    padding: 26px 44px 60px;
+  }
+  .section-title { font-size: 26px; }
+
+  /* sheets become centred dialogs rather than bottom sheets */
+  .sheet {
+    bottom: auto;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 500px;
+    max-height: 84dvh;
+    border-radius: 20px;
+    border-bottom: 1px solid var(--line);
+    padding: 14px 26px 28px;
+  }
+  @keyframes rise { from { transform: translate(-50%, calc(-50% + 14px)); opacity: 0; } }
+  .sheet-grip { display: none; }
+  .sheet-head { margin-bottom: 20px; }
+
+  .toast { bottom: 30px; left: auto; right: 30px; transform: none; max-width: 340px; }
+}
+
+/* wide desktop: give activity its own column beside the tiles */
+@media (min-width: 1180px) {
+  .balance-meta { gap: 16px; }
+}
+
+/* ───────────────────────── small shared bits ──────────────────────────── */
+
+.toolbar { display: flex; gap: 10px; align-items: center; margin: 12px 0 4px; flex-wrap: wrap; }
+.toolbar input, .toolbar select {
+  padding: 9px 12px; background: var(--ink); border: 1px solid var(--line);
+  border-radius: 11px; outline: none; font-size: 14px;
+}
+.toolbar input { flex: 1; min-width: 150px; }
+.toolbar input:focus, .toolbar select:focus { border-color: var(--brass); }
+
+.stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; }
+.stat { padding: 14px; background: var(--ink); border: 1px solid var(--line); border-radius: var(--r); }
+.stat .n { font-family: var(--serif); font-size: 25px; line-height: 1.1; }
+.stat .l { color: var(--mist); font-size: 12.5px; margin-top: 5px; }
+
+.qr { display: block; width: 190px; height: 190px; margin: 6px auto 16px; background: #fff; padding: 10px; border-radius: 12px; }
+
+.badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11.5px;
+  border: 1px solid var(--brass-d); color: var(--brass); margin-left: 8px; }
