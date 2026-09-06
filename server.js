@@ -11,6 +11,7 @@ const jwt = require('jsonwebtoken');
 
 const { db } = require('./db');
 const mail = require('./mail');
+const cards = require('./cards');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -198,15 +199,18 @@ const addTx = db.prepare(
  * Debits the payer, credits points, and optionally credits a payee.
  * Runs as one SQLite transaction so a balance can never go negative halfway.
  */
-const settle = db.transaction((payer, { amountP, kind, title, detail, payee, payeeTitle }) => {
-  const fresh = findUserById.get(payer.id);
-  if (fresh.balance_p < amountP) throw new Error('INSUFFICIENT');
+const settle = db.transaction((payer, { amountP, kind, title, detail, payee, payeeTitle, card }) => {
+  // Wallet payments need a balance. Card payments don't touch it.
+  if (!card) {
+    const fresh = findUserById.get(payer.id);
+    if (fresh.balance_p < amountP) throw new Error('INSUFFICIENT');
+  }
 
   const earned = pointsFor(amountP);
   const ref = reference();
 
   db.prepare('UPDATE users SET balance_p = balance_p - ?, points = points + ? WHERE id = ?').run(
-    amountP,
+    card ? 0 : amountP,
     earned,
     payer.id
   );
@@ -252,9 +256,21 @@ async function runPayment(req, res, { amountP, kind, title, detail, payee, payee
   const pinResult = checkPin(req.user, req.body.pin);
   if (!pinResult.ok) return fail(res, 403, pinResult.message);
 
+  // Optional: pay straight from a saved card instead of the wallet.
+  let card = null;
+  if (req.body.cardId) {
+    card = findCard.get(Number(req.body.cardId), req.user.id);
+    if (!card) return fail(res, 404, 'That card is not on your account.');
+
+    const auth = cards.authorise(card, amountP);
+    if (!auth.ok) return fail(res, 402, auth.message);
+
+    detail = [detail, `Paid by ${cards.describe(card)} · ${auth.authCode}`].filter(Boolean).join(' · ');
+  }
+
   let out;
   try {
-    out = settle(req.user, { amountP, kind, title, detail, payee, payeeTitle });
+    out = settle(req.user, { amountP, kind, title, detail, payee, payeeTitle, card });
   } catch (err) {
     if (err.message === 'INSUFFICIENT') return fail(res, 400, 'Not enough balance for this payment.');
     throw err;
@@ -495,13 +511,24 @@ app.post('/api/giftcards/buy', auth, payLimiter, async (req, res) => {
 
   const code = 'LSPG-' + crypto.randomBytes(4).toString('hex').toUpperCase().match(/.{4}/g).join('-');
 
+  let card = null;
+  let detail = `Sent to ${recipient}`;
+  if (req.body.cardId) {
+    card = findCard.get(Number(req.body.cardId), req.user.id);
+    if (!card) return fail(res, 404, 'That card is not on your account.');
+    const authed = cards.authorise(card, priceP);
+    if (!authed.ok) return fail(res, 402, authed.message);
+    detail += ` · Paid by ${cards.describe(card)} · ${authed.authCode}`;
+  }
+
   let out;
   try {
     out = settle(req.user, {
       amountP: priceP,
       kind: 'giftcard',
       title: `${inr(faceP)} gift card`,
-      detail: `Sent to ${recipient}`
+      detail,
+      card
     });
   } catch (err) {
     if (err.message === 'INSUFFICIENT') return fail(res, 400, 'Not enough balance for this gift card.');
@@ -568,6 +595,114 @@ app.post('/api/giftcards/redeem', auth, (req, res) => {
   });
 });
 
+/* --------------------------------------------------------- debit cards */
+
+const findCard = db.prepare('SELECT * FROM cards WHERE id = ? AND user_id = ?');
+
+const publicCard = (c) => ({
+  id: c.id,
+  brand: c.brand,
+  last4: c.last4,
+  label: c.label,
+  expiry: `${String(c.exp_month).padStart(2, '0')}/${String(c.exp_year).slice(-2)}`,
+  isDefault: !!c.is_default,
+  display: cards.describe(c)
+});
+
+app.get('/api/cards', auth, (req, res) => {
+  const rows = db
+    .prepare('SELECT * FROM cards WHERE user_id = ? ORDER BY is_default DESC, id DESC')
+    .all(req.user.id);
+  res.json({ cards: rows.map(publicCard), maxPerCharge: 50000 });
+});
+
+app.post('/api/cards', auth, payLimiter, (req, res) => {
+  const check = cards.inspect(req.body);
+  if (!check.ok) return fail(res, 400, check.message);
+
+  const mine = db.prepare('SELECT COUNT(*) n FROM cards WHERE user_id = ?').get(req.user.id).n;
+  if (mine >= 5) return fail(res, 400, 'You can save up to five cards. Remove one first.');
+
+  const dupe = db
+    .prepare('SELECT id FROM cards WHERE user_id = ? AND last4 = ? AND brand = ? AND exp_month = ? AND exp_year = ?')
+    .get(req.user.id, check.last4, check.brand, check.expMonth, check.expYear);
+  if (dupe) return fail(res, 400, 'That card is already saved.');
+
+  // The token is all we keep. check.digits goes out of scope here and is
+  // never written anywhere.
+  const token = cards.tokenise();
+  const label = String(req.body.label || '').slice(0, 24) || null;
+
+  const info = db
+    .prepare(
+      `INSERT INTO cards (user_id, token, brand, last4, exp_month, exp_year, label, is_default)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(req.user.id, token, check.brand, check.last4, check.expMonth, check.expYear, label, mine === 0 ? 1 : 0);
+
+  res.json({ ok: true, card: publicCard(findCard.get(info.lastInsertRowid, req.user.id)) });
+});
+
+app.post('/api/cards/default', auth, (req, res) => {
+  const card = findCard.get(Number(req.body.cardId), req.user.id);
+  if (!card) return fail(res, 404, 'That card is not on your account.');
+
+  db.transaction(() => {
+    db.prepare('UPDATE cards SET is_default = 0 WHERE user_id = ?').run(req.user.id);
+    db.prepare('UPDATE cards SET is_default = 1 WHERE id = ?').run(card.id);
+  })();
+  res.json({ ok: true });
+});
+
+app.post('/api/cards/remove', auth, (req, res) => {
+  const card = findCard.get(Number(req.body.cardId), req.user.id);
+  if (!card) return fail(res, 404, 'That card is not on your account.');
+
+  db.prepare('DELETE FROM cards WHERE id = ?').run(card.id);
+  const next = db.prepare('SELECT id FROM cards WHERE user_id = ? ORDER BY id LIMIT 1').get(req.user.id);
+  if (card.is_default && next) db.prepare('UPDATE cards SET is_default = 1 WHERE id = ?').run(next.id);
+
+  res.json({ ok: true });
+});
+
+/** Add money to the wallet from a saved card. */
+app.post('/api/cards/topup', auth, payLimiter, (req, res) => {
+  const card = findCard.get(Number(req.body.cardId), req.user.id);
+  if (!card) return fail(res, 404, 'That card is not on your account.');
+
+  const amt = amountCheck(req.body.amount, { min: 100, max: 50000 });
+  if (!amt.ok) return fail(res, 400, amt.message);
+
+  const pinResult = checkPin(req.user, req.body.pin);
+  if (!pinResult.ok) return fail(res, 403, pinResult.message);
+
+  const authed = cards.authorise(card, amt.amountP);
+  if (!authed.ok) return fail(res, 402, authed.message);
+
+  const ref = reference();
+  db.transaction(() => {
+    db.prepare('UPDATE users SET balance_p = balance_p + ? WHERE id = ?').run(amt.amountP, req.user.id);
+    addTx.run({
+      user_id: req.user.id,
+      kind: 'topup',
+      direction: 'credit',
+      amount_p: amt.amountP,
+      points: 0,
+      title: 'Added money',
+      detail: `${cards.describe(card)} · ${authed.authCode}`,
+      reference: ref
+    });
+  })();
+
+  res.json({
+    ok: true,
+    reference: ref,
+    amountLabel: inr(amt.amountP),
+    card: cards.describe(card),
+    user: publicUser(findUserById.get(req.user.id))
+  });
+});
+
 /* --------------------------------------------------- 6. history & points */
 
 app.get('/api/transactions', auth, (req, res) => {
@@ -589,11 +724,37 @@ app.get('/api/transactions', auth, (req, res) => {
   });
 });
 
+/* ------------------------------------------------------------- gateway */
+
+// Attaches req.lspUser when a session cookie is present, without demanding
+// one — the checkout page is public but offers wallet pay to signed-in users.
+app.use((req, res, next) => {
+  const token = req.cookies?.lsp_session;
+  if (token) {
+    try {
+      req.lspUser = findUserById.get(jwt.verify(token, JWT_SECRET).uid) || null;
+    } catch { req.lspUser = null; }
+  }
+  next();
+});
+
+require('./gateway')(app, {
+  db, auth, fail, inr, paise, reference, publicUser, findUserById, addTx, checkPin, cards, mail, rateLimit
+});
+
 /* ------------------------------------------------------------------ misc */
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, mail: process.env.RESEND_API_KEY ? 'resend' : 'console', time: new Date().toISOString() });
 });
+
+// Hosted checkout and the developer docs are their own pages.
+app.get('/pay/:id', (req, res) =>
+  res.sendFile(path.join(__dirname, '..', 'public', 'checkout.html'))
+);
+app.get('/developers', (req, res) =>
+  res.sendFile(path.join(__dirname, '..', 'public', 'developers.html'))
+);
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: IS_PROD ? '1h' : 0 }));
 

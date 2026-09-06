@@ -695,6 +695,143 @@ function sheetChangePin() {
   });
 }
 
+/* ─────────────────────────── 8. business gateway ─────────────────────── */
+
+async function sheetBusiness() {
+  const { merchants } = await api('/api/merchants');
+
+  if (!merchants.length) {
+    return openSheet('Business gateway', `
+      <p class="sheet-note">Take payments on your own website. Your server creates an order, your customer pays on a page carrying your name and logo, and the money lands in this wallet.</p>
+      <label class="field"><span>Business name</span>
+        <input name="name" maxlength="60" placeholder="Sharma Electronics" /></label>
+      <button id="go" class="btn-primary">Create my gateway</button>
+      <p class="sheet-note" style="margin-top:16px">Demo mode — no real money moves. <a href="/developers" target="_blank" style="color:var(--brass)">Read the API docs</a></p>
+    `, (root) => {
+      $('#go', root).addEventListener('click', async () => {
+        try {
+          const out = await api('/api/merchants', readForm(root));
+          showSecret(out.secret, out.warning, () => sheetBusiness());
+        } catch (err) { toast(err.message, true); }
+      });
+    });
+  }
+
+  const m = merchants[0];
+  const { orders, collectedLabel, paidCount } = await api(`/api/merchants/orders?merchantId=${m.id}`);
+
+  openSheet(m.name, `
+    <div class="kv"><span>Collected</span><span>${escapeHtml(collectedLabel)} · ${paidCount} paid</span></div>
+    <div class="kv"><span>Key ID</span><span style="word-break:break-all">${escapeHtml(m.keyId)}</span></div>
+    <div class="kv"><span>Secret</span><span>Hidden — reset to get a new one</span></div>
+    <div class="kv"><span>Checkout theme</span><span>${m.theme === 'light' ? 'Light' : 'Dark'}</span></div>
+    <div class="kv"><span>Methods</span><span>${escapeHtml(m.methods.join(', '))}</span></div>
+
+    <button id="settings" class="btn-primary" style="margin-top:20px">Logo, theme and methods</button>
+    <button id="roll" class="btn-quiet">Reset API secret</button>
+    <button id="docs" class="btn-quiet">API documentation</button>
+
+    <h3 class="section-title" style="margin-top:26px">Recent orders</h3>
+    ${orders.length
+      ? orders.slice(0, 12).map((o) => `<div class="tx">
+          <div class="tx-main">
+            <div class="tx-title">${escapeHtml(o.amountLabel)} · ${escapeHtml(o.status)}</div>
+            <div class="tx-sub">${escapeHtml([o.description, o.method, o.id].filter(Boolean).join(' · '))}</div>
+          </div>
+        </div>`).join('')
+      : '<p class="empty">No orders yet. Create one from your server with the API.</p>'}
+  `, (root) => {
+    $('#settings', root).addEventListener('click', () => sheetBusinessSettings(m));
+    $('#docs', root).addEventListener('click', () => window.open('/developers', '_blank'));
+    $('#roll', root).addEventListener('click', () => sheetRollSecret(m));
+  });
+}
+
+function showSecret(secret, warning, after) {
+  openSheet('Your API secret', `
+    <p class="sheet-note">${escapeHtml(warning)}</p>
+    <div class="gift-code" style="font-size:15px;word-break:break-all;letter-spacing:0">${escapeHtml(secret)}</div>
+    <button id="copy" class="btn-primary">Copy secret</button>
+    <p class="sheet-note" style="margin-top:16px">Put this in your server's environment variables. Never in a web page, never in JavaScript a customer can download, never in a GitHub repo.</p>
+    <button id="done" class="btn-quiet">I've saved it</button>
+  `, (root) => {
+    $('#copy', root).addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(secret); toast('Secret copied.'); }
+      catch { toast('Select the text above and copy it.', true); }
+    });
+    $('#done', root).addEventListener('click', () => { closeSheet(); if (after) after(); });
+  });
+}
+
+function sheetRollSecret(m) {
+  openSheet('Reset API secret', `
+    <p class="sheet-note">The current secret stops working the moment you do this. Any website using it will start failing until you paste the new one in.</p>
+    <label class="field"><span>Your payment PIN</span>
+      <input name="pin" type="password" inputmode="numeric" maxlength="5" placeholder="•••••" /></label>
+    <button id="go" class="btn-primary">Reset it</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        const out = await api('/api/merchants/roll-secret', { merchantId: m.id, pin: readForm(root).pin });
+        showSecret(out.secret, out.warning, () => sheetBusiness());
+      } catch (err) {
+        const msg = $('#msg', root);
+        msg.textContent = err.message; msg.hidden = false;
+      }
+    });
+  });
+}
+
+function sheetBusinessSettings(m) {
+  const ALL = ['upi', 'card', 'netbanking', 'wallet', 'cash'];
+  const LABEL = { upi: 'UPI', card: 'Card', netbanking: 'Netbanking', wallet: 'LSP-Pay wallet', cash: 'Cash' };
+
+  openSheet('Gateway settings', `
+    <label class="field"><span>Business name</span>
+      <input name="name" maxlength="60" value="${escapeHtml(m.name)}" /></label>
+    <label class="field"><span>Logo image link (https)</span>
+      <input name="logoUrl" placeholder="https://yoursite.com/logo.png" value="${escapeHtml(m.logoUrl || '')}" /></label>
+    <label class="field"><span>Checkout theme</span>
+      <select name="theme">
+        <option value="dark"${m.theme === 'dark' ? ' selected' : ''}>Dark</option>
+        <option value="light"${m.theme === 'light' ? ' selected' : ''}>Light</option>
+      </select></label>
+    <label class="field"><span>Webhook URL (https, optional)</span>
+      <input name="webhookUrl" placeholder="https://yoursite.com/lsp-webhook" value="${escapeHtml(m.webhookUrl || '')}" /></label>
+    <span class="field"><span>Payment methods</span></span>
+    <div class="picker">
+      ${ALL.map((x) => `<button class="pick" data-method="${x}" aria-pressed="${m.methods.includes(x)}">
+        <span><strong>${LABEL[x]}</strong></span>
+        <span class="pick-tag">${m.methods.includes(x) ? 'On' : 'Off'}</span></button>`).join('')}
+    </div>
+    <button id="go" class="btn-primary">Save</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    root.querySelectorAll('[data-method]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const on = b.getAttribute('aria-pressed') !== 'true';
+        b.setAttribute('aria-pressed', String(on));
+        $('.pick-tag', b).textContent = on ? 'On' : 'Off';
+      })
+    );
+
+    $('#go', root).addEventListener('click', async () => {
+      const methods = [...root.querySelectorAll('[data-method][aria-pressed="true"]')].map((b) => b.dataset.method);
+      const f = readForm(root);
+      try {
+        await api('/api/merchants/update', { merchantId: m.id, ...f, methods });
+        closeSheet();
+        toast('Gateway updated.');
+        sheetBusiness();
+      } catch (err) {
+        const msg = $('#msg', root);
+        msg.textContent = err.message; msg.hidden = false;
+      }
+    });
+  });
+}
+
 /* ─────────────────────────────── theming ─────────────────────────────── */
 
 function currentTheme() {
@@ -726,7 +863,8 @@ const SHEETS = {
   fastag: sheetFastag,
   gift: sheetGift,
   rewards: sheetRewards,
-  cards: sheetCards
+  cards: sheetCards,
+  business: sheetBusiness
 };
 
 document.querySelectorAll('[data-open]').forEach((b) =>

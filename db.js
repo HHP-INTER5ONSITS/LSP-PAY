@@ -52,6 +52,63 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id, id DESC);
 
+-- Saved cards. This table deliberately has no column for a card number.
+-- We keep only what is safe to store: the processor's token, the last four
+-- digits, brand and expiry. A leak of this table gives an attacker nothing
+-- they can charge.
+CREATE TABLE IF NOT EXISTS cards (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  token        TEXT NOT NULL,
+  brand        TEXT NOT NULL,
+  last4        TEXT NOT NULL,
+  exp_month    INTEGER NOT NULL,
+  exp_year     INTEGER NOT NULL,
+  label        TEXT,
+  is_default   INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cards_user ON cards(user_id);
+
+-- A merchant account: one business, one set of API credentials.
+-- key_id is public and may be embedded in a website. secret_hash is a
+-- hashed password — the plaintext secret is shown once and never stored.
+CREATE TABLE IF NOT EXISTS merchants (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id      INTEGER NOT NULL REFERENCES users(id),
+  name          TEXT NOT NULL,
+  logo_url      TEXT,
+  theme         TEXT NOT NULL DEFAULT 'dark',
+  methods       TEXT NOT NULL DEFAULT 'upi,card,netbanking',
+  webhook_url   TEXT,
+  webhook_secret TEXT,
+  key_id        TEXT NOT NULL UNIQUE,
+  secret_hash   TEXT NOT NULL,
+  secret_salt   TEXT NOT NULL,
+  live          INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_merchants_owner ON merchants(owner_id);
+
+-- One payment request. Created by the merchant's server, paid by their
+-- customer on the hosted checkout page.
+CREATE TABLE IF NOT EXISTS orders (
+  id            TEXT PRIMARY KEY,
+  merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
+  amount_p      INTEGER NOT NULL,
+  description   TEXT,
+  reference     TEXT,
+  customer_email TEXT,
+  status        TEXT NOT NULL DEFAULT 'created',  -- created | paid | awaiting_cash | failed | expired
+  method        TEXT,
+  payer_note    TEXT,
+  auth_code     TEXT,
+  expires_at    INTEGER NOT NULL,
+  paid_at       TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_orders_merchant ON orders(merchant_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS gift_cards (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   code           TEXT NOT NULL UNIQUE,

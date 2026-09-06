@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Checkout · LSP-Pay</title>
+<meta name="robots" content="noindex" />
+<meta name="theme-color" content="#0E0C1A" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+<style>
+  .co { max-width: 460px; margin: 0 auto; padding: 24px 20px 60px; }
+  .co-brand { display: flex; align-items: center; gap: 13px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+  .co-logo { width: 46px; height: 46px; border-radius: 11px; object-fit: contain; background: var(--raised); border: 1px solid var(--line); }
+  .co-logo-fallback { display: grid; place-items: center; font-family: var(--serif); font-size: 22px; color: var(--brass); }
+  .co-name { font-size: 16px; font-weight: 500; }
+  .co-sub { color: var(--mist); font-size: 12.5px; margin-top: 2px; }
+  .co-amount { padding: 28px 0 8px; }
+  .co-amount .n { font-family: var(--serif); font-size: 46px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .co-desc { color: var(--mist); font-size: 14px; margin-top: 10px; line-height: 1.55; }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 22px 0 18px; }
+  .tab { padding: 9px 14px; background: transparent; border: 1px solid var(--line); border-radius: 999px; font-size: 13.5px; color: var(--mist); }
+  .tab[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
+  .co-foot { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--mist); font-size: 12px; line-height: 1.65; }
+  .state { text-align: center; padding: 60px 20px; color: var(--mist); }
+</style>
+</head>
+<body>
+<div class="co" id="root">
+  <p class="state">Loading…</p>
+</div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const root = $('#root');
+const orderId = location.pathname.split('/').filter(Boolean).pop();
+let order = null, method = null;
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  let d = {}; try { d = await res.json(); } catch {}
+  if (!res.ok) throw new Error(d.error || 'Something went wrong.');
+  return d;
+}
+
+const LABELS = { upi: 'UPI', card: 'Card', netbanking: 'Netbanking', wallet: 'LSP-Pay wallet', cash: 'Cash' };
+
+function brandBlock(m) {
+  const logo = m.logoUrl
+    ? `<img class="co-logo" src="${esc(m.logoUrl)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'co-logo co-logo-fallback',textContent:'${esc(m.name[0] || '₹')}'}))" />`
+    : `<div class="co-logo co-logo-fallback">${esc(m.name[0] || '₹')}</div>`;
+  return `<div class="co-brand">${logo}
+    <div><div class="co-name">${esc(m.name)}</div><div class="co-sub">wants to be paid</div></div></div>`;
+}
+
+function methodForm(m) {
+  if (m === 'upi') return `<label class="field"><span>Your UPI ID</span>
+    <input name="vpa" placeholder="name@bank" /></label>`;
+  if (m === 'netbanking') return `<label class="field"><span>Your bank</span>
+    <select name="bank"></select></label>`;
+  if (m === 'card') return `
+    <label class="field"><span>Card number</span><input name="number" inputmode="numeric" maxlength="23" placeholder="4111 1111 1111 1111" /></label>
+    <div class="field-row">
+      <label class="field"><span>Expiry</span><input name="expiry" inputmode="numeric" maxlength="5" placeholder="09/29" /></label>
+      <label class="field"><span>Security code</span><input name="cvv" type="password" inputmode="numeric" maxlength="4" placeholder="•••" /></label>
+    </div>`;
+  if (m === 'wallet') return `<p class="sheet-note">Paid from your LSP-Pay balance. You need to be signed in.</p>
+    <label class="field"><span>Your payment PIN</span><input name="pin" type="password" inputmode="numeric" maxlength="5" placeholder="•••••" /></label>`;
+  if (m === 'cash') return `<p class="sheet-note">The business collects the money in person. They confirm it once received.</p>
+    <label class="field"><span>Note for the business (optional)</span><input name="note" maxlength="80" placeholder="Leave at reception" /></label>`;
+  return '';
+}
+
+function render() {
+  const m = order.merchant;
+  document.documentElement.setAttribute('data-theme', m.theme === 'light' ? 'light' : 'dark');
+  document.querySelector('meta[name=theme-color]').setAttribute('content', m.theme === 'light' ? '#FBF8F1' : '#0E0C1A');
+
+  if (order.status !== 'created') return renderClosed();
+
+  root.innerHTML = `
+    ${brandBlock(m)}
+    <div class="co-amount"><div class="n">${esc(order.amountLabel)}</div>
+      ${order.description ? `<p class="co-desc">${esc(order.description)}</p>` : ''}</div>
+    <div class="tabs">${m.methods.map(x => `<button class="tab" data-m="${x}" aria-pressed="false">${LABELS[x] || x}</button>`).join('')}</div>
+    <div id="form"></div>
+    <button id="pay" class="btn-primary" disabled>Pay ${esc(order.amountLabel)}</button>
+    <p id="msg" class="msg" hidden></p>
+    <p class="co-foot">Secured by LSP-Pay. This is a demo gateway — no real money moves and no card is charged. Never enter a real card number.</p>`;
+
+  root.querySelectorAll('.tab').forEach(t => t.addEventListener('click', async () => {
+    method = t.dataset.m;
+    root.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-pressed', String(x === t)));
+    $('#form').innerHTML = methodForm(method);
+    $('#pay').disabled = false;
+    $('#pay').textContent = method === 'cash' ? 'Choose cash' : `Pay ${order.amountLabel}`;
+
+    if (method === 'netbanking') {
+      const { banks } = await api('/api/checkout/banks');
+      $('[name=bank]').innerHTML = banks.map(b => `<option>${esc(b)}</option>`).join('');
+    }
+    if (method === 'card') {
+      const n = $('[name=number]'), e = $('[name=expiry]');
+      n.addEventListener('input', () => { const d = n.value.replace(/\D/g,'').slice(0,19); n.value = d.replace(/(.{4})/g,'$1 ').trim(); });
+      e.addEventListener('input', () => { const d = e.value.replace(/\D/g,'').slice(0,4); e.value = d.length>2 ? d.slice(0,2)+'/'+d.slice(2) : d; });
+    }
+  }));
+
+  $('#pay').addEventListener('click', async () => {
+    const btn = $('#pay'), msg = $('#msg');
+    const body = { method };
+    root.querySelectorAll('#form input, #form select').forEach(i => { if (i.name) body[i.name] = i.value.trim(); });
+
+    btn.disabled = true; msg.hidden = true;
+    try {
+      const out = await api(`/api/checkout/${orderId}/pay`, body);
+      renderDone(out);
+    } catch (err) {
+      msg.textContent = err.message; msg.hidden = false; btn.disabled = false;
+    }
+  });
+}
+
+function renderDone(out) {
+  const cash = out.status === 'awaiting_cash';
+  root.innerHTML = `
+    ${brandBlock(order.merchant)}
+    <div class="done" style="padding-top:40px">
+      <div class="done-mark">${cash ? '₹' : '✓'}</div>
+      <div class="done-amt">${esc(out.amountLabel)}</div>
+      <p class="done-to">${cash ? `Reserved for cash. Pay ${esc(out.merchant)} in person.` : `Paid to ${esc(out.merchant)}`}</p>
+      <div class="kv"><span>Order</span><span>${esc(out.orderId)}</span></div>
+      ${out.authCode ? `<div class="kv"><span>Authorisation</span><span>${esc(out.authCode)}</span></div>` : ''}
+      <div class="kv"><span>Status</span><span>${cash ? 'Awaiting cash' : 'Paid'}</span></div>
+    </div>
+    <p class="co-foot">Keep this order number for your records.</p>`;
+}
+
+function renderClosed() {
+  const words = {
+    paid: ['✓', 'This order has already been paid.'],
+    awaiting_cash: ['₹', 'This order is set to be paid in cash.'],
+    expired: ['⏱', 'This payment link expired. Ask the business for a new one.'],
+    failed: ['!', 'This payment did not go through.']
+  }[order.status] || ['!', 'This payment link is no longer active.'];
+
+  root.innerHTML = `${brandBlock(order.merchant)}
+    <div class="done" style="padding-top:44px">
+      <div class="done-mark" style="border-color:var(--mist);color:var(--mist)">${words[0]}</div>
+      <div class="done-amt">${esc(order.amountLabel)}</div>
+      <p class="done-to">${esc(words[1])}</p>
+      <div class="kv"><span>Order</span><span>${esc(order.id)}</span></div>
+    </div>`;
+}
+
+(async function () {
+  try {
+    order = await api('/api/checkout/' + orderId);
+    render();
+  } catch (err) {
+    root.innerHTML = `<p class="state">${esc(err.message)}</p>`;
+  }
+})();
+</script>
+</body>
+</html>

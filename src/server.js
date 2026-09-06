@@ -724,11 +724,37 @@ app.get('/api/transactions', auth, (req, res) => {
   });
 });
 
+/* ------------------------------------------------------------- gateway */
+
+// Attaches req.lspUser when a session cookie is present, without demanding
+// one — the checkout page is public but offers wallet pay to signed-in users.
+app.use((req, res, next) => {
+  const token = req.cookies?.lsp_session;
+  if (token) {
+    try {
+      req.lspUser = findUserById.get(jwt.verify(token, JWT_SECRET).uid) || null;
+    } catch { req.lspUser = null; }
+  }
+  next();
+});
+
+require('./gateway')(app, {
+  db, auth, fail, inr, paise, reference, publicUser, findUserById, addTx, checkPin, cards, mail, rateLimit
+});
+
 /* ------------------------------------------------------------------ misc */
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, mail: process.env.RESEND_API_KEY ? 'resend' : 'console', time: new Date().toISOString() });
 });
+
+// Hosted checkout and the developer docs are their own pages.
+app.get('/pay/:id', (req, res) =>
+  res.sendFile(path.join(__dirname, '..', 'public', 'checkout.html'))
+);
+app.get('/developers', (req, res) =>
+  res.sendFile(path.join(__dirname, '..', 'public', 'developers.html'))
+);
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: IS_PROD ? '1h' : 0 }));
 

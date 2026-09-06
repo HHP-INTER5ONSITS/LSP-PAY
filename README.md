@@ -14,6 +14,7 @@ Built to run on a free Render web service with a GitHub repo behind it. Emails g
 | Top up FASTag | Toll balance against a tag number and vehicle. |
 | Buy a gift card | ₹500 / ₹1,000 / ₹2,000 / ₹5,000 cards at 8% off. The code is emailed to the recipient, who redeems it into their own balance. |
 | Debit cards | Save up to five cards, add money to your wallet from one, or pick a card at the moment you pay. |
+| Business gateway | Take payments on your own website. Your server creates an order, the customer pays on a hosted page carrying your name, logo and theme, and the money lands in your wallet. UPI, card, netbanking, LSP-Pay wallet and cash. |
 | Points | 5 points per ₹100 spent, on every one of the flows above. |
 
 **Light and dark.** The app follows your device setting, and the sun/moon button in the header overrides it. Your choice is remembered on that device.
@@ -25,6 +26,24 @@ The payment PIN starts at **00000**. Changing it sends a fresh code to your emai
 Every new wallet opens with ₹10,000 so you can test straight away. Change that with the `OPENING_BALANCE` variable.
 
 ---
+
+## The business gateway
+
+Open **Business gateway** in the app to create one. You get a **key ID** (`lsp_test_…`, public) and a **secret** (`lsps_…`, private, shown once).
+
+```bash
+# From your server. Never from a browser.
+curl -X POST https://YOUR-APP.onrender.com/api/v1/orders \
+  -u "lsp_test_xxx:lsps_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 499, "description": "Blue shirt", "reference": "your-8821"}'
+```
+
+Send the customer to the `checkoutUrl` that comes back, then confirm the result by webhook (HMAC-SHA256 signed) or by polling `GET /api/v1/orders/:id`. Full docs live at `/developers` on your own deployment.
+
+**The secret is a password.** Anyone holding it can create orders in your name, read your customers' email addresses and mark payments as collected. Keep it in a server environment variable — never in HTML, never in JavaScript, never in your repo. If it leaks, reset it in the app and the old one dies instantly.
+
+Never trust the customer's browser to tell you a payment succeeded. Check the API.
 
 ## 1. Get a Resend API key
 
@@ -99,6 +118,7 @@ src/server.js   all routes, PIN checks, money movement
 src/db.js       SQLite schema
 src/mail.js     Resend calls and the email templates
 src/cards.js    card validation and the demo tokeniser
+src/gateway.js  merchant accounts, the public API, checkout and webhooks
 public/         the app itself — plain HTML, CSS and JS, no build step
 ```
 
@@ -121,10 +141,12 @@ PINs and one-time codes are hashed with scrypt and a per-record salt. Codes expi
 | POST | `/api/recharge/mobile` · `/api/recharge/fastag` | recharges |
 | GET/POST | `/api/giftcards` · `/buy` · `/redeem` | gift cards |
 | GET | `/api/transactions` | last 60 entries |
+| POST/GET | `/api/v1/orders` · `/:id` · `/:id/collect` | merchant API (Basic auth) |
+| GET/POST | `/api/checkout/:id` · `/pay` | hosted checkout, public |
 
 ## One important limit
 
-LSP-Pay moves balances **inside its own database**. It does not touch real money: no bank rails, no UPI, no card network, and the provider codes are LSP-Pay's own routing labels, not live Razorpay, Stripe or PayU accounts. Recharges and FASTag top-ups are recorded, not fulfilled by an operator.
+The gateway blocks double payment, replayed and expired links, tampered webhooks and one merchant reading another's orders — all tested. What no amount of code fixes is the licensing: LSP-Pay moves balances **inside its own database**. It does not touch real money: no bank rails, no UPI, no card network, and the provider codes are LSP-Pay's own routing labels, not live Razorpay, Stripe or PayU accounts. Recharges and FASTag top-ups are recorded, not fulfilled by an operator.
 
 To make any of it real you need a payment aggregator licence or a licensed partner, plus RBI KYC, and each provider's live API keys. Collecting other people's money without that is not something you can quietly ship — start with the provider's sandbox and their compliance team.
 

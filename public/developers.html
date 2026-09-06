@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Developers · LSP-Pay Business Gateway</title>
+<meta name="theme-color" content="#0E0C1A" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+<script>
+  (function () { try { var s = localStorage.getItem('lsp-theme'); if (s) document.documentElement.setAttribute('data-theme', s); } catch (e) {} })();
+</script>
+<style>
+  .doc { max-width: 760px; margin: 0 auto; padding: 40px 22px 90px; }
+  .doc h1 { font-family: var(--serif); font-size: 40px; font-weight: 400; margin: 0 0 10px; }
+  .doc h2 { font-family: var(--serif); font-size: 26px; font-weight: 400; margin: 46px 0 12px; padding-top: 22px; border-top: 1px solid var(--line); }
+  .doc h3 { font-size: 15px; font-weight: 600; margin: 26px 0 8px; }
+  .doc p, .doc li { color: var(--mist); font-size: 15px; line-height: 1.7; }
+  .doc strong { color: var(--ivory); font-weight: 500; }
+  .doc a { color: var(--brass); }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; color: var(--ivory); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+  p code, li code, td code { background: var(--raised); padding: 2px 6px; border-radius: 5px; color: var(--brass); }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; }
+  th, td { text-align: left; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: top; }
+  th { color: var(--ivory); font-weight: 500; }
+  td { color: var(--mist); }
+  .warn { background: var(--bad-bg); border: 1px solid var(--bad-line); color: var(--bad-text); padding: 15px 17px; border-radius: var(--r); margin: 20px 0; font-size: 14.5px; line-height: 1.65; }
+  .warn strong { color: inherit; font-weight: 600; }
+  .back { display: inline-block; margin-bottom: 26px; color: var(--brass); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="doc">
+  <a class="back" href="/">← Back to LSP-Pay</a>
+  <h1>Business Gateway</h1>
+  <p>Take payments on your own website. Your server creates an order, you send the customer to our checkout page, and we tell you when they've paid.</p>
+
+  <div class="warn">
+    <strong>Demo gateway.</strong> No real money moves, no bank is contacted and no card is charged. Do not ask real customers for real card numbers. Taking real payments in India needs an RBI-licensed aggregator — see the last section.
+  </div>
+
+  <h2>Your credentials</h2>
+  <p>Create a gateway in the LSP-Pay app under <strong>Business gateway</strong>. You get two values:</p>
+  <table>
+    <tr><th>Key ID</th><td><code>lsp_test_…</code> — public. Safe to put in a URL or a page.</td></tr>
+    <tr><th>Secret</th><td><code>lsps_…</code> — private, like a password. Shown once, stored only as a hash.</td></tr>
+  </table>
+
+  <div class="warn">
+    <strong>The secret must never reach a browser.</strong> Not in your HTML, not in your JavaScript, not in a mobile app, not committed to GitHub. Anyone who has it can create orders in your name, read your customers' email addresses, and mark payments as collected. Keep it in a server environment variable. If it leaks, roll it in the app — the old one dies instantly.
+  </div>
+
+  <h2>1. Create an order</h2>
+  <p>From <strong>your server</strong>, never the browser. Authenticate with HTTP Basic: username is your key ID, password is your secret.</p>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/orders \
+  -u "lsp_test_xxxxx:lsps_xxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 499,
+    "description": "Blue cotton shirt, size M",
+    "reference": "your-order-8821",
+    "customer_email": "buyer@example.com"
+  }'</code></pre>
+
+  <h3>Response</h3>
+  <pre><code>{
+  "id": "ord_9f3c2a1b7d4e5f6a8b90",
+  "amount": 499,
+  "amountLabel": "₹499.00",
+  "status": "created",
+  "checkoutUrl": "https://YOUR-APP.onrender.com/pay/ord_9f3c2a1b7d4e5f6a8b90",
+  "expiresAt": "2026-09-06T12:30:00.000Z"
+}</code></pre>
+
+  <table>
+    <tr><th>amount</th><td>Required. Rupees, up to 200000.</td></tr>
+    <tr><th>description</th><td>Optional. Shown to the customer on the checkout page.</td></tr>
+    <tr><th>reference</th><td>Optional. Your own order number, returned back to you.</td></tr>
+    <tr><th>customer_email</th><td>Optional. We email them a receipt when they pay.</td></tr>
+  </table>
+
+  <h2>2. Send the customer to checkout</h2>
+  <p>Redirect them to <code>checkoutUrl</code>, or open it in a new tab. The page carries your business name, your logo and your chosen theme, and offers the methods you switched on. Links stop working after 30 minutes.</p>
+
+  <h2>3. Find out if they paid</h2>
+  <p>Two ways. Use the webhook for speed and polling as a safety net — do both if the payment matters.</p>
+
+  <h3>Webhook</h3>
+  <p>Set an https URL in the app. We <code>POST</code> JSON to it on every result, with an <code>X-LSP-Signature</code> header: HMAC-SHA256 of the exact raw body, keyed with your webhook secret. Always verify it, or anyone who guesses your URL can fake a payment.</p>
+  <pre><code>const crypto = require('crypto');
+
+app.post('/lsp-webhook',
+  express.raw({ type: 'application/json' }),   // raw body, not parsed
+  (req, res) => {
+    const expected = crypto
+      .createHmac('sha256', process.env.LSP_WEBHOOK_SECRET)
+      .update(req.body)
+      .digest('hex');
+
+    const given = req.get('X-LSP-Signature') || '';
+    const ok = expected.length === given.length &&
+      crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given));
+
+    if (!ok) return res.sendStatus(400);
+
+    const { event, order } = JSON.parse(req.body);
+    if (event === 'order.paid') {
+      // Ship the goods. Look up order.reference to find your own record.
+    }
+    res.sendStatus(200);
+  });</code></pre>
+
+  <h3>Polling</h3>
+  <pre><code>curl https://YOUR-APP.onrender.com/api/v1/orders/ord_xxx \
+  -u "lsp_test_xxxxx:lsps_xxxxx"</code></pre>
+  <p>Trust <code>status</code>, never the customer's browser. A customer landing on your success page proves nothing — only the API does.</p>
+
+  <h2>Order statuses</h2>
+  <table>
+    <tr><th>created</th><td>Waiting to be paid.</td></tr>
+    <tr><th>paid</th><td>Money is in your LSP-Pay wallet. Fulfil the order.</td></tr>
+    <tr><th>awaiting_cash</th><td>Customer chose cash. Nothing collected yet.</td></tr>
+    <tr><th>expired</th><td>Nobody paid within 30 minutes.</td></tr>
+  </table>
+
+  <h3>Confirming a cash order</h3>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/api/v1/orders/ord_xxx/collect \
+  -u "lsp_test_xxxxx:lsps_xxxxx"</code></pre>
+
+  <h2>Testing</h2>
+  <table>
+    <tr><th>Card, approves</th><td><code>4111 1111 1111 1111</code>, any future expiry, any CVV</td></tr>
+    <tr><th>Card, no funds</th><td><code>4000 0000 0000 9995</code></td></tr>
+    <tr><th>Card, refused</th><td><code>4000 0000 0000 0002</code></td></tr>
+    <tr><th>UPI, approves</th><td>any ID like <code>someone@okbank</code></td></tr>
+    <tr><th>UPI, declines</th><td>any ID starting <code>fail@</code></td></tr>
+  </table>
+
+  <h2>What can still go wrong</h2>
+  <p>The gateway blocks double payment, replayed links, expired links, tampered webhooks and cross-merchant order access. What it cannot do is make an unlicensed business legal, or survive its own secret being pasted into a web page. Two rules carry most of the risk:</p>
+  <ul>
+    <li><strong>Never trust the browser.</strong> Confirm every payment against the API or a verified webhook before you ship anything.</li>
+    <li><strong>Never publish the secret.</strong> If it appears in any file a customer can download, roll it immediately.</li>
+  </ul>
+
+  <h2>Going live</h2>
+  <p>This is a demo. Collecting real money in India means being an RBI-authorised payment aggregator or working through one — Razorpay, Cashfree, PayU and Stripe India all do this and handle the licensing, KYC and settlement for you. Their sandboxes are free. Build against this gateway to shape your checkout, then swap the two calls in <code>src/cards.js</code> and the order routes for theirs when you're ready.</p>
+  <p style="margin-top:34px"><a href="/">← Back to LSP-Pay</a></p>
+</div>
+</body>
+</html>
