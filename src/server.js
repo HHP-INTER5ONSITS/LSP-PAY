@@ -311,8 +311,23 @@ async function runPayment(req, res, { amountP, kind, title, detail, payee, payee
 
 /* ------------------------------------------------------------ rate limits */
 
-const codeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: true, legacyHeaders: false });
-const payLimiter = rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+// Counted per email / per signed-in user rather than per IP: on Render many
+// people can appear to share one IP, and a per-IP limit would lock them all out.
+const limitJson = (msg) => (req, res, next, options) => res.status(options.statusCode).json({ error: msg });
+const codeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => {
+    if (req.user) return 'user:' + req.user.id;
+    const e = normEmail(req.body && req.body.email);
+    return e ? 'email:' + e : 'ip:' + req.ip;
+  },
+  handler: limitJson('Too many code requests. Wait 15 minutes and try again.')
+});
+const payLimiter = rateLimit({
+  windowMs: 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => (req.user ? 'user:' + req.user.id : 'ip:' + req.ip),
+  handler: limitJson('Too many payments in a minute. Wait a moment and try again.')
+});
 
 /* ------------------------------------------------------------------ auth  */
 

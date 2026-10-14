@@ -21,6 +21,8 @@ services:
         value: LSP-Pay <onboarding@resend.dev>
       - key: RESEND_API_KEY
         sync: false          # paste your key in the Render dashboard
+      - key: MONGODB_URI
+        sync: false          # MongoDB Atlas connection string: keeps all data across restarts
       # Uncomment together with the disk block below on a paid plan:
       # - key: DATA_DIR
       #   value: /var/data

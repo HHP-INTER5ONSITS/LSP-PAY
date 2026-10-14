@@ -118,8 +118,29 @@ module.exports = function mountGateway(app, deps) {
     next();
   }
 
-  const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
-  const payLimiter = rateLimit({ windowMs: 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
+  // Limits are counted per API key, not per IP address. On Render many callers can
+  // share one outgoing IP, so a per-IP limit lets one busy app block every merchant.
+  const keyIdFrom = (req) => {
+    const h = req.get('Authorization') || '';
+    if (!h.startsWith('Basic ')) return '';
+    const d = Buffer.from(h.slice(6), 'base64').toString('utf8');
+    const cut = d.indexOf(':');
+    return cut > 0 ? d.slice(0, cut).slice(0, 80) : '';
+  };
+  const tooMany = (msg) => (req, res, next, options) => res.status(options.statusCode).json({ error: msg });
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number(process.env.API_RATE_LIMIT || 600),
+    standardHeaders: true, legacyHeaders: false,
+    keyGenerator: (req) => { const k = keyIdFrom(req); return k ? 'key:' + k : 'ip:' + req.ip; },
+    handler: tooMany('Too many API requests for this key. Slow down and retry after the Retry-After header.')
+  });
+  // Checkout: counted per order, so one shopper can't block another.
+  const payLimiter = rateLimit({
+    windowMs: 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false,
+    keyGenerator: (req) => 'order:' + String(req.params.id || '').slice(0, 80) + ':' + req.ip,
+    handler: tooMany('Too many tries on this checkout. Wait a minute and try again.')
+  });
 
   /* ------------------------------------------------ webhooks (outgoing) */
 
