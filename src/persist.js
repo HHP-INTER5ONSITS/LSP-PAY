@@ -38,7 +38,10 @@ const enabled = () => !!process.env.MONGODB_URI;
 
 async function connect() {
   const { MongoClient, GridFSBucket } = require('mongodb');
-  client = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 20000 });
+  const uri = String(process.env.MONGODB_URI).trim();
+  if (/[<>]/.test(uri) || /db_password|db_username/.test(uri))
+    throw new Error('MONGODB_URI still contains <db_username> or <db_password>. Replace them (and the < > around them) with your real Atlas username and password. Invalid connection string');
+  client = new MongoClient(uri, { serverSelectionTimeoutMS: 20000 });
   await client.connect();
   const mdb = client.db(process.env.MONGODB_DB || 'lsppay');
   bucket = new GridFSBucket(mdb, { bucketName: 'snapshots' });
