@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="LSP-Pay">
+  <defs>
+    <linearGradient id="brass" gradientUnits="userSpaceOnUse" x1="40" y1="30" x2="90" y2="100">
+      <stop offset="0" stop-color="#E8C170"/>
+      <stop offset="0.55" stop-color="#D9A441"/>
+      <stop offset="1" stop-color="#A97A1E"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="30" fill="#0E0C1A"/>
+  <rect x="1.5" y="1.5" width="125" height="125" rx="28.5" fill="none" stroke="#2C2740" stroke-width="3"/>
+
+  <!-- rupee mark, drawn rather than typed so it renders without a font -->
+  <g stroke="url(#brass)" stroke-width="9" stroke-linecap="round" fill="none">
+    <path d="M45 36h38"/>
+    <path d="M45 54h38"/>
+    <path d="M45 36c22 0 22 30 0 30"/>
+    <path d="M45 66 83 96"/>
+  </g>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 110" width="420" height="110" role="img" aria-label="LSP-Pay">
+  <defs>
+    <linearGradient id="b2" gradientUnits="userSpaceOnUse" x1="36" y1="28" x2="76" y2="82">
+      <stop offset="0" stop-color="#E8C170"/>
+      <stop offset="0.55" stop-color="#D9A441"/>
+      <stop offset="1" stop-color="#A97A1E"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="98" height="98" rx="24" fill="#0E0C1A"/>
+  <g stroke="url(#b2)" stroke-width="7.5" stroke-linecap="round" fill="none" transform="translate(6,6) scale(0.766)">
+    <path d="M45 36h38"/><path d="M45 54h38"/>
+    <path d="M45 36c22 0 22 30 0 30"/><path d="M45 66 83 96"/>
+  </g>
+  <text x="126" y="72" font-family="Instrument Serif, Georgia, serif" font-size="56" fill="#D9A441">LSP&#8209;Pay</text>
+</svg>

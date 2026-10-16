@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="LSP-Pay">
+  <rect width="128" height="128" rx="30" fill="#FBF8F1"/>
+  <rect x="1.5" y="1.5" width="125" height="125" rx="28.5" fill="none" stroke="#E3DACA" stroke-width="3"/>
+  <g stroke="#8A6314" stroke-width="9" stroke-linecap="round" fill="none">
+    <path d="M45 36h38"/>
+    <path d="M45 54h38"/>
+    <path d="M45 36c22 0 22 30 0 30"/>
+    <path d="M45 66 83 96"/>
+  </g>
+</svg>
