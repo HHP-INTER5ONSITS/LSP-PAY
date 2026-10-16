@@ -226,6 +226,62 @@ curl https://YOUR-APP.onrender.com/api/v1/orders.csv -u "lsp_test_xxxxx:lsps_xxx
     <li><strong>Never publish the secret.</strong> If it appears in any file a customer can download, roll it immediately.</li>
   </ul>
 
+  <h2 id="lsp-oauth">LSP OAuth — "Sign in with LSP-Pay"</h2>
+  <p>Separate from the payment gateway. This lets <em>other people's</em> sites sign users in with their LSP-Pay account, the way you sign in with Google. Any LSP-Pay account can register an app: <strong>Settings → Developer — LSP OAuth</strong>.</p>
+  <p>You get two values, same shape as the gateway's:</p>
+  <table>
+    <tr><th>Client ID</th><td><code>lspc_…</code> — public. Goes in your sign-in link.</td></tr>
+    <tr><th>Client secret</th><td><code>lspk_…</code> — private. Shown once, stored as a hash, used only server-to-server.</td></tr>
+  </table>
+
+  <h3>1. Send the user to the consent screen</h3>
+  <pre><code>https://YOUR-APP.onrender.com/oauth/authorize
+  ?client_id=lspc_xxxxx
+  &amp;redirect_uri=https://yoursite.com/auth/lsp/callback
+  &amp;scope=profile%20email
+  &amp;state=RANDOM_STRING_YOU_CHECK_LATER</code></pre>
+  <p>They see your app's name, who built it, and exactly what you asked for. On Allow they come back to your redirect with <code>?code=…&amp;state=…</code>; on Cancel, <code>?error=access_denied</code>.</p>
+
+  <div class="warn"><strong>The redirect URL must match a registered one character for character.</strong> Register it under your app first. This single check is what stops someone crafting a link that sends your users' codes to their own server — so an unregistered URL is refused outright rather than redirected to.</div>
+
+  <h3>2. Swap the code for a token, server-side</h3>
+  <pre><code>curl -X POST https://YOUR-APP.onrender.com/oauth/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "grant_type": "authorization_code",
+    "code": "lspa_xxxxx",
+    "client_id": "lspc_xxxxx",
+    "client_secret": "lspk_xxxxx",
+    "redirect_uri": "https://yoursite.com/auth/lsp/callback"
+  }'</code></pre>
+  <p>Codes last 60 seconds and work once. The <code>redirect_uri</code> must be the same one you used in step 1. Returns an <code>access_token</code> good for 12 hours. Basic auth works too, if you prefer the credentials in a header.</p>
+
+  <h3>3. Ask who they are</h3>
+  <pre><code>curl https://YOUR-APP.onrender.com/oauth/userinfo \
+  -H "Authorization: Bearer lspt_xxxxx"</code></pre>
+  <pre><code>{ "sub": "673aeeb0…", "name": "alice", "handle": "alice",
+  "email": "alice@example.com", "email_verified": true }</code></pre>
+  <p><code>sub</code> is the stable per-app user id — use it as your key. It is derived per app, so two different apps see two different ids for the same person and cannot cross-reference their users.</p>
+
+  <h3>Scopes</h3>
+  <table>
+    <tr><th>profile</th><td>Name and LSP-Pay handle. The default.</td></tr>
+    <tr><th>email</th><td>Email address.</td></tr>
+    <tr><th>wallet:read</th><td>Balance and points, read only.</td></tr>
+  </table>
+  <p>The token only ever returns what was granted — ask for <code>profile</code> and the email is simply absent. Unrecognised scopes are dropped rather than honoured. <strong>No scope can move money or read a PIN</strong>, by design: there is no code path from a token to a payment.</p>
+
+  <h3>PKCE, for apps that cannot hold a secret</h3>
+  <p>Mobile apps and single-page apps should not ship a client secret. Send <code>code_challenge</code> (base64url of the SHA-256 of a random verifier) on the authorize link, then <code>code_verifier</code> instead of <code>client_secret</code> at the token step.</p>
+
+  <h3>What happens when things go wrong</h3>
+  <ul>
+    <li>A reused code is refused <em>and</em> every token it produced is revoked — a replay suggests the code leaked.</li>
+    <li>Users can withdraw access at any time under Settings, which kills live tokens immediately, not just the record.</li>
+    <li>Deleting your app signs out everyone who used it.</li>
+    <li>Rolling your secret breaks the old one instantly.</li>
+  </ul>
+
   <h2>Going live</h2>
   <p>This is a demo. Collecting real money in India means being an RBI-authorised payment aggregator or working through one — Razorpay, Cashfree, PayU and Stripe India all do this and handle the licensing, KYC and settlement for you. Their sandboxes are free. Build against this gateway to shape your checkout, then swap the two calls in <code>src/cards.js</code> and the order routes for theirs when you're ready.</p>
   <p style="margin-top:34px"><a href="/">← Back to LSP-Pay</a></p>

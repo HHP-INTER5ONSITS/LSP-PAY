@@ -91,6 +91,18 @@ The callback URL must match **character for character** — a trailing slash or 
 
 Client secrets go in Render's environment variables, never in the repo.
 
+## LSP OAuth — be a sign-in provider
+
+Separate from the payment gateway. Any account can register an app under **Settings → Developer — LSP OAuth** and put "Sign in with LSP-Pay" on another site, the way you'd use Google. You get a client ID (`lspc_…`, public) and a secret (`lspk_…`, shown once).
+
+```
+GET  /oauth/authorize?client_id=…&redirect_uri=…&scope=profile%20email&state=…
+POST /oauth/token        code + secret  → access token
+GET  /oauth/userinfo     Bearer token   → sub, name, email, balance
+```
+
+Scopes are `profile`, `email` and `wallet:read`. **None of them can move money or read a PIN** — there is no code path from a token to a payment. Redirect URLs must be registered and are matched exactly; codes are single-use and last 60 seconds; reusing one revokes the tokens it produced. Users see every app they've allowed under Settings and can cut it off, which kills live tokens immediately. Full docs at `/developers#lsp-oauth`.
+
 ## 1. Get a Resend API key
 
 1. Sign up at [resend.com](https://resend.com) and open **API Keys → Create API Key**.
@@ -164,7 +176,8 @@ src/server.js   all routes, PIN checks, money movement
 src/db.js       SQLite schema
 src/mail.js     Resend calls and the email templates
 src/cards.js    card validation and the demo tokeniser
-src/oauth.js    GitHub and Google sign-in
+src/oauth.js    GitHub and Google sign-in (we are the client)
+src/idp.js      LSP OAuth — other apps sign in with LSP-Pay (we are the provider)
 src/gateway.js  merchant accounts, the public API, checkout and webhooks
 public/         the app itself — plain HTML, CSS and JS, no build step
 ```

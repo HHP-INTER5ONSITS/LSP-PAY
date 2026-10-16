@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Authorise · LSP-Pay</title>
+<meta name="robots" content="noindex" />
+<meta name="theme-color" content="#0E0C1A" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+<script>
+  (function () { try { var s = localStorage.getItem('lsp-theme'); if (s) document.documentElement.setAttribute('data-theme', s); } catch (e) {} })();
+</script>
+<style>
+  .az { max-width: 440px; margin: 0 auto; padding: 44px 22px 60px; }
+  .az-logos { display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 26px; }
+  .az-mark { width: 54px; height: 54px; border-radius: 13px; display: grid; place-items: center;
+    border: 1px solid var(--line); background: var(--panel); object-fit: contain;
+    font-family: var(--serif); font-size: 24px; color: var(--brass); }
+  .az-link { color: var(--mist); letter-spacing: .2em; font-size: 13px; }
+  .az-title { font-family: var(--serif); font-size: 27px; font-weight: 400; text-align: center; margin: 0 0 8px; line-height: 1.25; }
+  .az-sub { text-align: center; color: var(--mist); font-size: 14px; line-height: 1.6; margin: 0 0 24px; }
+  .az-scope { padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); margin-bottom: 18px; }
+  .az-scope h3 { margin: 0 0 11px; font-size: 13px; color: var(--mist); font-weight: 500; }
+  .az-scope li { list-style: none; padding: 7px 0 7px 24px; position: relative; font-size: 14.5px; line-height: 1.5; }
+  .az-scope li::before { content: '✓'; position: absolute; left: 0; color: var(--brass); }
+  .az-scope ul { margin: 0; padding: 0; }
+  .az-foot { margin-top: 20px; color: var(--mist); font-size: 12.5px; line-height: 1.65; text-align: center; }
+  .state { text-align: center; padding: 70px 20px; color: var(--mist); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="az" id="root"><p class="state">Loading…</p></div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const root = $('#root');
+const Q = new URLSearchParams(location.search);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  let d = {}; try { d = await res.json(); } catch {}
+  if (!res.ok) throw new Error(d.error || 'Something went wrong.');
+  return d;
+}
+
+/**
+ * If the app sent us somewhere we refuse to redirect, we must show the error
+ * here rather than bouncing — sending it onward is how codes get stolen.
+ */
+function bounceDenied() {
+  const uri = Q.get('redirect_uri');
+  if (!uri) return location.href = '/';
+  const url = new URL(uri);
+  url.searchParams.set('error', 'access_denied');
+  if (Q.get('state')) url.searchParams.set('state', Q.get('state'));
+  location.href = url.toString();
+}
+
+const mark = (logo, fallback) => logo
+  ? `<img class="az-mark" src="${esc(logo)}" alt="" />`
+  : `<div class="az-mark">${esc(fallback)}</div>`;
+
+(async function () {
+  let d;
+  try {
+    d = await api('/api/oauth/request?' + Q.toString());
+  } catch (err) {
+    root.innerHTML = `<p class="state">${esc(err.message)}<br><br>
+      <span style="font-size:13px">Nothing was shared. If you were sent here by an app, tell them this link is misconfigured.</span></p>`;
+    return;
+  }
+
+  if (!d.signedIn) {
+    root.innerHTML = `
+      ${mark(d.app.logoUrl, (d.app.name[0] || '?'))}
+      <h1 class="az-title" style="margin-top:20px">Sign in to continue</h1>
+      <p class="az-sub">${esc(d.app.name)} wants to connect to your LSP-Pay account.</p>
+      <button class="btn-primary" id="go">Sign in to LSP-Pay</button>
+      <p class="az-foot">You will come straight back here afterwards.</p>`;
+    $('#go').addEventListener('click', () => {
+      sessionStorage.setItem('lsp-after-auth', location.href);
+      location.href = '/';
+    });
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="az-logos">
+      ${mark(d.app.logoUrl, (d.app.name[0] || '?'))}
+      <span class="az-link">· · ·</span>
+      <div class="az-mark">₹</div>
+    </div>
+
+    <h1 class="az-title">${esc(d.app.name)} wants to use your LSP-Pay account</h1>
+    <p class="az-sub">Built by ${esc(d.developer)}${d.app.description ? ' · ' + esc(d.app.description) : ''}</p>
+
+    <div class="az-scope">
+      <h3>This will let it see</h3>
+      <ul>${d.scope.map(s => `<li>${esc(s.label)}</li>`).join('')}</ul>
+    </div>
+
+    <button class="btn-primary" id="allow">Allow${d.alreadyGranted ? ' again' : ''}</button>
+    <button class="btn-quiet" id="deny">Cancel</button>
+
+    <p class="az-foot">Signed in as ${esc(d.you)}. This never lets ${esc(d.app.name)} move your money or see your PIN.
+      You can take access away any time in LSP-Pay under Settings.</p>
+    <p id="msg" class="msg" hidden></p>`;
+
+  $('#deny').addEventListener('click', bounceDenied);
+
+  $('#allow').addEventListener('click', async () => {
+    const btn = $('#allow');
+    btn.disabled = true;
+    try {
+      const out = await api('/api/oauth/approve', {
+        client_id: Q.get('client_id'),
+        redirect_uri: Q.get('redirect_uri'),
+        scope: Q.get('scope'),
+        state: Q.get('state'),
+        code_challenge: Q.get('code_challenge')
+      });
+      location.href = out.redirect;
+    } catch (err) {
+      const m = $('#msg');
+      m.textContent = err.message; m.hidden = false;
+      btn.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>

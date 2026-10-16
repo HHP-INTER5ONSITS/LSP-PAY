@@ -211,6 +211,12 @@ async function loadHistory() {
 }
 
 function showWallet() {
+  // Someone sent here mid-authorisation goes straight back to it.
+  try {
+    const back = sessionStorage.getItem('lsp-after-auth');
+    if (back) { sessionStorage.removeItem('lsp-after-auth'); location.href = back; return; }
+  } catch { /* private mode */ }
+
   el('screen-auth').hidden = true;
   el('screen-app').hidden = false;
   paintUser();
@@ -667,6 +673,8 @@ function sheetSettings() {
     <button id="save" class="btn-primary">Save profile</button>
     <button id="pin" class="btn-quiet">Change payment PIN</button>
     <button id="linked" class="btn-quiet">Linked accounts</button>
+    <button id="connected" class="btn-quiet">Apps you have allowed</button>
+    <button id="dev" class="btn-quiet">Developer — LSP OAuth</button>
     <button id="logins" class="btn-quiet">Recent sign-ins</button>
     <button id="out" class="btn-quiet">Sign out</button>
   `, (root) => {
@@ -677,6 +685,9 @@ function sheetSettings() {
       } catch (err) { toast(err.message, true); }
     });
     $('#pin', root).addEventListener('click', sheetChangePin);
+    $('#connected', root).addEventListener('click', sheetConnectedApps);
+    $('#dev', root).addEventListener('click', sheetDeveloper);
+
     $('#linked', root).addEventListener('click', async () => {
       const d = await api('/api/auth/linked');
       openSheet('Linked accounts', `
@@ -1426,6 +1437,146 @@ function sheetBusinessSettings(m) {
         msg.textContent = err.message; msg.hidden = false;
       }
     });
+  });
+}
+
+/* ──────────────────────── LSP OAuth — developer ───────────────────────── */
+
+async function sheetDeveloper() {
+  const { apps, scopes } = await api('/api/dev/apps');
+
+  openSheet('Developer', `
+    <p class="sheet-note">Let other sites offer "Sign in with LSP-Pay". Register an app, get a client ID and secret, and their users approve it on a consent screen.</p>
+    ${apps.length
+      ? `<div class="picker">${apps.map((a) => `
+          <div class="pick" style="cursor:default">
+            <span><strong>${escapeHtml(a.name)}</strong>
+              <small>${a.users} user${a.users === 1 ? '' : 's'}${a.active ? '' : ' · disabled'}<br>${escapeHtml(a.clientId)}</small></span>
+            <span style="display:flex;gap:10px">
+              <button class="btn-link" data-edit="${a.id}">Edit</button>
+              <button class="btn-link" data-roll="${a.id}">New secret</button>
+            </span>
+          </div>`).join('')}</div>`
+      : '<p class="empty">No apps registered yet.</p>'}
+    <button id="add" class="btn-primary">Register an app</button>
+    <button id="docs" class="btn-quiet">How to use it</button>
+  `, (root) => {
+    $('#add', root).addEventListener('click', () => sheetNewDevApp(scopes));
+    $('#docs', root).addEventListener('click', () => window.open('/developers#lsp-oauth', '_blank'));
+    root.querySelectorAll('[data-edit]').forEach((b) =>
+      b.addEventListener('click', () => sheetEditDevApp(apps.find((a) => a.id === Number(b.dataset.edit)))));
+    root.querySelectorAll('[data-roll]').forEach((b) =>
+      b.addEventListener('click', () => sheetRollAppSecret(Number(b.dataset.roll))));
+  });
+}
+
+const devAppFields = (a = {}) => `
+  <label class="field"><span>App name — your users will see this</span>
+    <input name="name" maxlength="60" value="${escapeHtml(a.name || '')}" placeholder="Kaapi Rewards" /></label>
+  <label class="field"><span>One-line description (optional)</span>
+    <input name="description" maxlength="140" value="${escapeHtml(a.description || '')}" placeholder="Points for your coffee" /></label>
+  <label class="field"><span>Redirect URLs — one per line, https (localhost may use http)</span>
+    <textarea name="redirectUris" rows="3" style="resize:vertical" placeholder="https://yoursite.com/auth/lsp/callback">${escapeHtml((a.redirectUris || []).join('\n'))}</textarea></label>
+  <label class="field"><span>Logo URL (optional)</span>
+    <input name="logoUrl" value="${escapeHtml(a.logoUrl || '')}" placeholder="https://yoursite.com/logo.png" /></label>
+  <label class="field"><span>Homepage (optional)</span>
+    <input name="homepage" value="${escapeHtml(a.homepage || '')}" placeholder="https://yoursite.com" /></label>`;
+
+function readDevForm(root) {
+  const f = readForm(root);
+  f.redirectUris = (root.querySelector('[name=redirectUris]').value || '')
+    .split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
+  return f;
+}
+
+function sheetNewDevApp(scopes) {
+  openSheet('Register an app', `
+    ${devAppFields()}
+    <button id="go" class="btn-primary">Register it</button>
+    <p id="msg" class="msg" hidden></p>
+    <p class="sheet-note" style="margin-top:16px">The redirect URL must match character for character when your app signs someone in. That exact-match check is what stops anyone else collecting your users' sign-in codes.</p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        const out = await api('/api/dev/apps', readDevForm(root));
+        showAppCredentials(out.app, out.secret, out.warning);
+      } catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+  });
+}
+
+function sheetEditDevApp(a) {
+  openSheet('Edit app', `
+    <div class="kv"><span>Client ID</span><span style="word-break:break-all">${escapeHtml(a.clientId)}</span></div>
+    ${devAppFields(a)}
+    <button id="go" class="btn-primary">Save</button>
+    <button id="del" class="btn-quiet">Delete this app</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        await api('/api/dev/apps/update', { appId: a.id, ...readDevForm(root) });
+        closeSheet(); toast('App updated.'); sheetDeveloper();
+      } catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+    $('#del', root).addEventListener('click', async () => {
+      await api('/api/dev/apps/delete', { appId: a.id });
+      closeSheet(); toast('App deleted. Everyone signed in through it was signed out.'); sheetDeveloper();
+    });
+  });
+}
+
+function sheetRollAppSecret(appId) {
+  openSheet('New client secret', `
+    <p class="sheet-note">The current secret stops working immediately, and any site using it will fail until you paste in the new one.</p>
+    <label class="field"><span>Your payment PIN</span>
+      <input name="pin" type="password" inputmode="numeric" maxlength="5" placeholder="•••••" /></label>
+    <button id="go" class="btn-primary">Generate it</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      try {
+        const out = await api('/api/dev/apps/roll-secret', { appId, pin: readForm(root).pin });
+        showAppCredentials(null, out.secret, out.warning);
+      } catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+  });
+}
+
+function showAppCredentials(a, secret, warning) {
+  openSheet('Your app credentials', `
+    ${a ? `<div class="kv"><span>Client ID</span><span style="word-break:break-all">${escapeHtml(a.clientId)}</span></div>` : ''}
+    <p class="sheet-note" style="margin-top:16px">${escapeHtml(warning)}</p>
+    <div class="gift-code" style="font-size:13px;word-break:break-all;letter-spacing:0">${escapeHtml(secret)}</div>
+    <button id="copy" class="btn-primary">Copy the secret</button>
+    <button id="done" class="btn-quiet">I've saved it</button>
+    <p class="sheet-note" style="margin-top:16px">The client ID is public and belongs in your sign-in link. The secret is a password — keep it in a server environment variable, never in a web page.</p>
+  `, (root) => {
+    $('#copy', root).addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(secret); toast('Secret copied.'); }
+      catch { toast('Select the text above and copy it.', true); }
+    });
+    $('#done', root).addEventListener('click', () => { closeSheet(); sheetDeveloper(); });
+  });
+}
+
+async function sheetConnectedApps() {
+  const { grants } = await api('/api/oauth/grants');
+
+  openSheet('Apps you have allowed', `
+    <p class="sheet-note">Other sites you signed into using LSP-Pay. None of them can move money or see your PIN.</p>
+    ${grants.length
+      ? grants.map((g) => `<div class="kv">
+          <span>${escapeHtml(g.name)}<br><small style="color:var(--mist)">${escapeHtml(g.scope.join(' · '))}</small></span>
+          <button class="btn-link" data-revoke="${g.appId}">Remove</button></div>`).join('')
+      : '<p class="empty">You have not signed into anything with LSP-Pay yet.</p>'}
+  `, (root) => {
+    root.querySelectorAll('[data-revoke]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        await api('/api/oauth/grants/revoke', { appId: Number(b.dataset.revoke) });
+        toast('Access removed and signed out everywhere.');
+        sheetConnectedApps();
+      }));
   });
 }
 
