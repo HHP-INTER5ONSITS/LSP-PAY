@@ -27,12 +27,6 @@ app.use(cookieParser());
 
 /* ---------------------------------------------------------------- helpers */
 
-const PROVIDERS = {
-  '0001119': { name: 'Razorpay', blurb: 'Cards, UPI and netbanking settlements' },
-  '0091023': { name: 'Stripe', blurb: 'International card settlements' },
-  '0099123': { name: 'PayU', blurb: 'Domestic collections and payouts' }
-};
-
 const OPERATORS = ['Airtel', 'Jio', 'Vi', 'BSNL'];
 const GIFT_DISCOUNT = 0.08; // 8% off face value
 const GIFT_FACES = [500, 1000, 2000, 5000];
@@ -404,30 +398,6 @@ app.post('/api/pin/change', auth, (req, res) => {
   db.prepare('UPDATE users SET pin_hash = ?, pin_salt = ? WHERE id = ?').run(digest, salt, req.user.id);
   pinLocks.delete(req.user.id);
   res.json({ ok: true, user: publicUser(findUserById.get(req.user.id)) });
-});
-
-/* ------------------------------------------------------ 1. pay a provider */
-
-app.get('/api/providers', auth, (req, res) => {
-  res.json({
-    providers: Object.entries(PROVIDERS).map(([code, p]) => ({ code, ...p }))
-  });
-});
-
-app.post('/api/pay/provider', auth, payLimiter, async (req, res) => {
-  const code = String(req.body.code || '').trim();
-  const provider = PROVIDERS[code];
-  if (!provider) return fail(res, 400, 'No provider matches that code.');
-
-  const amt = amountCheck(req.body.amount);
-  if (!amt.ok) return fail(res, 400, amt.message);
-
-  return runPayment(req, res, {
-    amountP: amt.amountP,
-    kind: 'provider',
-    title: `${provider.name} settlement`,
-    detail: `Provider code ${code}${req.body.note ? ' · ' + String(req.body.note).slice(0, 80) : ''}`
-  });
 });
 
 /* ------------------------------------------------------- pay another user */
@@ -815,7 +785,7 @@ app.get('/api/analytics', auth, (req, res) => {
     .get(req.user.id);
 
   const LABELS = {
-    send: 'People', provider: 'Providers', mobile: 'Mobile', fastag: 'FASTag',
+    send: 'People', mobile: 'Mobile', fastag: 'FASTag',
     giftcard: 'Gift cards', topup: 'Top-ups', receive: 'Received'
   };
 
@@ -1271,6 +1241,10 @@ app.use((req, res, next) => {
     } catch { req.lspUser = null; }
   }
   next();
+});
+
+require('./oauth')(app, {
+  db, auth, fail, findUserByEmail, findUserById, createUser, setSession, publicUser, notify, IS_PROD
 });
 
 require('./gateway')(app, {

@@ -1,6 +1,6 @@
 # LSP-Pay
 
-Light real server pay. A rupee wallet you sign into with an email code — no passwords — with a payment PIN, six ways to spend, and points on everything.
+Light real server pay. A rupee wallet you sign into with an email code — no passwords — sign in with GitHub or Google, a payment PIN, and points on everything.
 
 Built to run on a free Render web service with a GitHub repo behind it. Emails go out through Resend.
 
@@ -9,7 +9,6 @@ Built to run on a free Render web service with a GitHub repo behind it. Emails g
 | Flow | What it does |
 | --- | --- |
 | Pay a person | Send rupees to anyone with an LSP-Pay account, by email. Lands in their balance instantly. |
-| Pay a payment provider | Settle to a gateway by routing code — Razorpay `0001119`, Stripe `0091023`, PayU `0099123`. |
 | Recharge a mobile number | Prepaid top-up for Airtel, Jio, Vi or BSNL. |
 | Top up FASTag | Toll balance against a tag number and vehicle. |
 | Buy a gift card | ₹500 / ₹1,000 / ₹2,000 / ₹5,000 cards at 8% off. The code is emailed to the recipient, who redeems it into their own balance. |
@@ -59,6 +58,38 @@ Never trust the customer's browser to tell you a payment succeeded. Check the AP
 **Also in the gateway:** discount codes customers type at checkout (percentage or flat, with minimum spend, use limits and expiry), invoice line items, up to three gateways per account with a switcher, a customer list, printable QR codes for any payment link (`/l/:id/qr.svg`), refunds (full or partial, back to the payer's wallet where possible), shareable payment links that work like Razorpay's payment pages, `Idempotency-Key` support so a retried request never double-charges, webhook retries with backoff, a settlement summary and a CSV export.
 
 **Emails.** Add `"notify": true` and a `customer_email` when creating an order and the customer is emailed the payment link with a Pay button — Razorpay's Payment Links, essentially, so you can charge someone without having a website at all. They also get a receipt once paid, and you get an alert when money arrives. `POST /api/v1/orders/:id/notify` sends the link again. All of it goes through Resend, so verify a domain there before emailing real customers.
+
+## Sign in with GitHub and Google
+
+Both are optional — without them the app still works on email codes alone, and the buttons simply don't appear. Set up either or both.
+
+### GitHub
+
+1. github.com → **Settings → Developer settings → OAuth Apps → New OAuth App**
+2. Homepage URL: `https://lsp-pay.onrender.com`
+3. Authorization callback URL: `https://lsp-pay.onrender.com/auth/github/callback`
+4. Register, then **Generate a new client secret**
+
+Add to Render: `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+
+### Google
+
+1. console.cloud.google.com → create a project
+2. **APIs & Services → OAuth consent screen** — External, fill in the app name and your email
+3. **Credentials → Create Credentials → OAuth client ID → Web application**
+4. Authorised redirect URI: `https://lsp-pay.onrender.com/auth/google/callback`
+
+Add to Render: `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+
+### Both
+
+Also set `PUBLIC_URL` to `https://lsp-pay.onrender.com`. Without it the callback URL is guessed from request headers, which breaks behind some proxies.
+
+The callback URL must match **character for character** — a trailing slash or `http` instead of `https` and the provider refuses. For local testing, register a second set of credentials against `http://localhost:3000/auth/<provider>/callback`.
+
+**An account is matched by verified email.** If you already have a wallet from an email code and then sign in with GitHub using the same address, it links to that same wallet rather than making a second one. An address the provider has *not* verified is refused outright — otherwise anyone could sign up to a provider claiming your address and walk into your money. Unlinking is always allowed, because an email code is still a way in.
+
+Client secrets go in Render's environment variables, never in the repo.
 
 ## 1. Get a Resend API key
 
@@ -133,6 +164,7 @@ src/server.js   all routes, PIN checks, money movement
 src/db.js       SQLite schema
 src/mail.js     Resend calls and the email templates
 src/cards.js    card validation and the demo tokeniser
+src/oauth.js    GitHub and Google sign-in
 src/gateway.js  merchant accounts, the public API, checkout and webhooks
 public/         the app itself — plain HTML, CSS and JS, no build step
 ```

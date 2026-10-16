@@ -39,8 +39,15 @@
     </header>
 
     <div class="auth-card">
+      <div id="oauth-block" hidden>
+        <h1 class="auth-title">Sign in to LSP-Pay</h1>
+        <p class="auth-sub">Use an account you already have, or get a code by email.</p>
+        <div id="oauth-buttons"></div>
+        <div class="or-rule"><span>or</span></div>
+      </div>
+
       <div id="auth-step-email">
-        <h1 class="auth-title">Sign in with your email</h1>
+        <h1 class="auth-title" id="email-title">Sign in with your email</h1>
         <p class="auth-sub">We send a six-digit code. No password to remember.</p>
         <label class="field">
           <span>Email address</span>
@@ -100,10 +107,6 @@
       <button class="action" data-open="pay">
         <span class="glyph">₹</span>
         <span class="action-text"><strong>Pay a person</strong><small>Send to anyone on LSP-Pay</small></span>
-      </button>
-      <button class="action" data-open="provider">
-        <span class="glyph">⇄</span>
-        <span class="action-text"><strong>Pay a payment provider</strong><small>Razorpay, Stripe or PayU by code</small></span>
       </button>
       <button class="action" data-open="mobile">
         <span class="glyph">☏</span>

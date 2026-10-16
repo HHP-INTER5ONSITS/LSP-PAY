@@ -119,6 +119,40 @@ async function verifyLoginCode() {
 el('auth-verify').addEventListener('click', verifyLoginCode);
 el('auth-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') verifyLoginCode(); });
 
+/* ──────────────────────────── oauth sign-in ───────────────────────────── */
+
+const OAUTH_MARKS = {
+  github: '<svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>',
+  google: '<svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33Z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.46 3.44 1.35l2.58-2.58C13.46.9 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z"/></svg>'
+};
+
+async function setUpOAuth() {
+  // The server only offers a provider it has credentials for, so a
+  // half-configured deploy shows a working button rather than a dead one.
+  let providers = [];
+  try { providers = (await api('/api/auth/providers')).providers; } catch { return; }
+  if (!providers.length) return;
+
+  el('oauth-buttons').innerHTML = providers.map((p) => `
+    <button class="oauth-btn" data-go="${escapeHtml(p.name)}">
+      ${OAUTH_MARKS[p.name] || ''}Continue with ${escapeHtml(p.label)}
+    </button>`).join('');
+
+  document.querySelectorAll('[data-go]').forEach((b) =>
+    b.addEventListener('click', () => { location.href = `/auth/${b.dataset.go}`; }));
+
+  el('oauth-block').hidden = false;
+  el('email-title').textContent = 'Or use an email code';
+}
+
+// A failed round trip comes back as ?oauth_error=… — show it and tidy the URL.
+(function showOAuthError() {
+  const err = new URLSearchParams(location.search).get('oauth_error');
+  if (!err) return;
+  history.replaceState({}, '', location.pathname);
+  setTimeout(() => authMessage(err), 60);
+})();
+
 /* ──────────────────────────────── wallet ──────────────────────────────── */
 
 function paintUser() {
@@ -334,57 +368,6 @@ async function sheetPay() {
             amountLabel: out.amountLabel,
             headline: `Paid to ${f.to}`,
             rows: [['Reference', out.reference], ['Points earned', `+${out.points}`], ['Balance left', user.balanceLabel]]
-          })
-      });
-    });
-  });
-}
-
-/* ────────────────────────── 2. payment providers ──────────────────────── */
-
-async function sheetProvider() {
-  const { providers } = await api('/api/providers');
-  let chosen = null;
-
-  openSheet('Pay a payment provider', `
-    <p class="sheet-note">Settle to a gateway using its LSP-Pay routing code.</p>
-    <div class="picker">
-      ${providers.map((p) => `
-        <button class="pick" data-code="${p.code}" aria-pressed="false">
-          <span><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.blurb)}</small></span>
-          <span class="pick-tag">${escapeHtml(p.code)}</span>
-        </button>`).join('')}
-    </div>
-    <label class="field"><span>Or type the code</span>
-      <input name="code" inputmode="numeric" maxlength="7" placeholder="0001119" /></label>
-    ${amountField()}
-    <label class="field"><span>Reference note (optional)</span>
-      <input name="note" maxlength="80" placeholder="Invoice or order id" /></label>
-    <button id="go" class="btn-primary">Continue</button>
-  `, (root) => {
-    root.querySelectorAll('.pick').forEach((b) =>
-      b.addEventListener('click', () => {
-        chosen = b.dataset.code;
-        root.querySelectorAll('.pick').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-        root.querySelector('[name=code]').value = chosen;
-      })
-    );
-
-    $('#go', root).addEventListener('click', async () => {
-      const f = readForm(root);
-      const provider = providers.find((p) => p.code === f.code);
-      if (!provider) return toast('That code does not match a provider.', true);
-      if (!(Number(f.amount) > 0)) return toast('Enter an amount.', true);
-
-      await confirmWithPin({
-        amountLabel: money(f.amount),
-        to: `To ${provider.name} · ${provider.code}`,
-        submit: (pin, cardId) => api('/api/pay/provider', { ...f, pin, cardId }),
-        onDone: (out) =>
-          showSuccess({
-            amountLabel: out.amountLabel,
-            headline: `Settled to ${provider.name}`,
-            rows: [['Provider code', provider.code], ['Reference', out.reference], ['Points earned', `+${out.points}`]]
           })
       });
     });
@@ -683,6 +666,7 @@ function sheetSettings() {
       <input name="dailyLimit" type="number" min="1" step="1" value="${user.dailyLimit || ''}" placeholder="No limit" /></label>
     <button id="save" class="btn-primary">Save profile</button>
     <button id="pin" class="btn-quiet">Change payment PIN</button>
+    <button id="linked" class="btn-quiet">Linked accounts</button>
     <button id="logins" class="btn-quiet">Recent sign-ins</button>
     <button id="out" class="btn-quiet">Sign out</button>
   `, (root) => {
@@ -693,6 +677,28 @@ function sheetSettings() {
       } catch (err) { toast(err.message, true); }
     });
     $('#pin', root).addEventListener('click', sheetChangePin);
+    $('#linked', root).addEventListener('click', async () => {
+      const d = await api('/api/auth/linked');
+      openSheet('Linked accounts', `
+        <p class="sheet-note">Sign in faster next time. An email code always works too, so unlinking never locks you out.</p>
+        ${d.available.length ? d.available.map((p) => {
+          const on = d.linked.find((l) => l.provider === p.name);
+          return `<div class="kv"><span>${escapeHtml(p.label)}${on ? `<br><small style="color:var(--mist)">${escapeHtml(on.email || '')}</small>` : ''}</span>
+            ${on ? `<button class="btn-link" data-unlink="${escapeHtml(p.name)}">Unlink</button>`
+                 : `<button class="btn-link" data-link="${escapeHtml(p.name)}">Link</button>`}</div>`;
+        }).join('') : '<p class="empty">No sign-in providers are set up on this server.</p>'}
+      `, (r2) => {
+        r2.querySelectorAll('[data-link]').forEach((b) =>
+          b.addEventListener('click', () => { location.href = `/auth/${b.dataset.link}`; }));
+        r2.querySelectorAll('[data-unlink]').forEach((b) =>
+          b.addEventListener('click', async () => {
+            await api('/api/auth/unlink', { provider: b.dataset.unlink });
+            toast('Unlinked.');
+            closeSheet();
+          }));
+      });
+    });
+
     $('#logins', root).addEventListener('click', async () => {
       const { logins } = await api('/api/logins');
       openSheet('Recent sign-ins', logins.length
@@ -1449,7 +1455,6 @@ function toggleTheme() {
 
 const SHEETS = {
   pay: sheetPay,
-  provider: sheetProvider,
   mobile: sheetMobile,
   fastag: sheetFastag,
   gift: sheetGift,
@@ -1481,5 +1486,6 @@ el('tx-export')?.addEventListener('click', () => window.open('/api/statement.csv
     showWallet();
   } catch {
     el('screen-auth').hidden = false;
+    setUpOAuth();
   }
 })();
