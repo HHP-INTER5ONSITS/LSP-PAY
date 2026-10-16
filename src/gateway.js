@@ -806,6 +806,31 @@ module.exports = function mountGateway(app, deps) {
 
   /* ----------------------------------------------- reusable payment links */
 
+  // Dates past year 275,760 make JavaScript throw, so expiry is capped and every
+  // stored date is formatted defensively (old rows may already hold a bad value).
+  const MAX_EXPIRY_DAYS = 3650; // 10 years
+  const isoOrNull = (ms) => {
+    if (ms === null || ms === undefined || ms === '') return null;
+    const d = new Date(Number(ms));
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  };
+  function expiryFrom(body) {
+    const raw = body.expiresInDays;
+    if (raw === undefined || raw === null || raw === '') return { at: null };
+    const days = Number(raw);
+    if (!Number.isFinite(days) || days < 1 || days > MAX_EXPIRY_DAYS)
+      return { error: `expiresInDays must be between 1 and ${MAX_EXPIRY_DAYS}, or left out for no expiry.` };
+    return { at: Date.now() + Math.floor(days) * 86400000 };
+  }
+  function usageFrom(body) {
+    const raw = body.usageLimit;
+    if (raw === undefined || raw === null || raw === '') return { limit: null };
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1 || n > 1000000)
+      return { error: 'usageLimit must be between 1 and 1000000, or left out for unlimited.' };
+    return { limit: Math.floor(n) };
+  }
+
   const publicLink = (l, baseUrl) => ({
     id: l.id,
     title: l.title,
@@ -816,7 +841,7 @@ module.exports = function mountGateway(app, deps) {
     usedCount: l.used_count,
     active: !!l.active,
     url: `${baseUrl}/l/${l.id}`,
-    expiresAt: l.expires_at ? new Date(l.expires_at).toISOString() : null,
+    expiresAt: isoOrNull(l.expires_at),
     createdAt: l.created_at
   });
 
@@ -833,6 +858,11 @@ module.exports = function mountGateway(app, deps) {
       amountP = paise(rupees);
     }
 
+    const exp = expiryFrom(body);
+    if (exp.error) return { error: exp.error };
+    const use = usageFrom(body);
+    if (use.error) return { error: use.error };
+
     const id = 'plink_' + crypto.randomBytes(7).toString('hex');
     db.prepare(
       `INSERT INTO payment_links (id, merchant_id, title, description, amount_p, usage_limit, expires_at)
@@ -843,8 +873,8 @@ module.exports = function mountGateway(app, deps) {
       title,
       String(body.description || '').slice(0, 200) || null,
       amountP,
-      Number(body.usageLimit) > 0 ? Math.floor(Number(body.usageLimit)) : null,
-      Number(body.expiresInDays) > 0 ? Date.now() + Math.floor(Number(body.expiresInDays)) * 86400000 : null
+      use.limit,
+      exp.at
     );
 
     return { link: db.prepare('SELECT * FROM payment_links WHERE id = ?').get(id) };
@@ -940,7 +970,7 @@ module.exports = function mountGateway(app, deps) {
     maxUses: c.max_uses,
     usedCount: c.used_count,
     active: !!c.active,
-    expiresAt: c.expires_at ? new Date(c.expires_at).toISOString() : null
+    expiresAt: isoOrNull(c.expires_at)
   });
 
   function createCoupon(merchantId, body) {
@@ -955,6 +985,8 @@ module.exports = function mountGateway(app, deps) {
     if (percent !== null && (!Number.isFinite(percent) || percent < 1 || percent > 90))
       return { error: 'A percentage discount must be between 1 and 90.' };
     if (flat !== null && (!Number.isFinite(flat) || flat <= 0)) return { error: 'A flat discount must be positive.' };
+    const exp = expiryFrom(body);
+    if (exp.error) return { error: exp.error };
 
     try {
       const info = db.prepare(
@@ -964,7 +996,7 @@ module.exports = function mountGateway(app, deps) {
         merchantId, code, percent, flat === null ? null : paise(flat),
         body.minSpend ? paise(Number(body.minSpend)) : 0,
         Number(body.maxUses) > 0 ? Math.floor(Number(body.maxUses)) : null,
-        Number(body.expiresInDays) > 0 ? Date.now() + Math.floor(Number(body.expiresInDays)) * 86400000 : null
+        exp.at
       );
       return { coupon: db.prepare('SELECT * FROM coupons WHERE id = ?').get(info.lastInsertRowid) };
     } catch (err) {

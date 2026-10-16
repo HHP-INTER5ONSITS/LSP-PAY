@@ -1203,7 +1203,7 @@ function sheetNewLink(m) {
       <label class="field"><span>Usage limit (optional)</span>
         <input name="usageLimit" type="number" min="1" placeholder="unlimited" /></label>
       <label class="field"><span>Expires in days (optional)</span>
-        <input name="expiresInDays" type="number" min="1" placeholder="never" /></label>
+        <input name="expiresInDays" type="number" min="1" max="3650" placeholder="never" /></label>
     </div>
     <button id="go" class="btn-primary">Create it</button>
     <p id="msg" class="msg" hidden></p>
@@ -1287,7 +1287,7 @@ function sheetNewCoupon(m) {
       <label class="field"><span>Minimum spend (optional)</span><input name="minSpend" type="number" min="1" placeholder="none" /></label>
       <label class="field"><span>Use limit (optional)</span><input name="maxUses" type="number" min="1" placeholder="unlimited" /></label>
     </div>
-    <label class="field"><span>Expires in days (optional)</span><input name="expiresInDays" type="number" min="1" placeholder="never" /></label>
+    <label class="field"><span>Expires in days (optional)</span><input name="expiresInDays" type="number" min="1" max="3650" placeholder="never" /></label>
     <button id="go" class="btn-primary">Create it</button>
     <p id="msg" class="msg" hidden></p>
   `, (root) => {
