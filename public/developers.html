@@ -264,6 +264,9 @@ curl https://YOUR-APP.onrender.com/api/v1/orders.csv -u "lsp_test_xxxxx:lsps_xxx
   "email": "alice@example.com", "email_verified": true }</code></pre>
   <p><code>sub</code> is the stable per-app user id — use it as your key. It is derived per app, so two different apps see two different ids for the same person and cannot cross-reference their users.</p>
 
+  <h3>Try it without building anything</h3>
+  <p>Register an app whose redirect URL is <code>https://YOUR-APP.onrender.com/oauth/playground</code>, then open that page and paste in your client ID. It plays the part of the third-party site and walks the whole flow — consent screen, code, token, userinfo — so you can see what your users will see. It uses PKCE, so it never asks for your secret.</p>
+
   <h3>Scopes</h3>
   <table>
     <tr><th>profile</th><td>Name and LSP-Pay handle. The default.</td></tr>

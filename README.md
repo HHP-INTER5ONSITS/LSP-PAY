@@ -101,6 +101,8 @@ POST /oauth/token        code + secret  → access token
 GET  /oauth/userinfo     Bearer token   → sub, name, email, balance
 ```
 
+To see it work before wiring up another site, register an app whose redirect URL is `https://lsp-pay.onrender.com/oauth/playground` and open that page — it plays the third-party app and walks the whole flow, using PKCE so no secret is needed.
+
 Scopes are `profile`, `email` and `wallet:read`. **None of them can move money or read a PIN** — there is no code path from a token to a payment. Redirect URLs must be registered and are matched exactly; codes are single-use and last 60 seconds; reusing one revokes the tokens it produced. Users see every app they've allowed under Settings and can cut it off, which kills live tokens immediately. Full docs at `/developers#lsp-oauth`.
 
 ## 1. Get a Resend API key

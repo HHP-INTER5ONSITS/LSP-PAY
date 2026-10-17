@@ -256,6 +256,10 @@ module.exports = function mountIdp(app, deps) {
   app.get('/oauth/authorize', (req, res) =>
     res.sendFile(path.join(__dirname, '..', 'public', 'authorize.html')));
 
+  /** A client app you can point at your own gateway, to see the flow work. */
+  app.get('/oauth/playground', (req, res) =>
+    res.sendFile(path.join(__dirname, '..', 'public', 'playground.html')));
+
   /** The user pressed Allow. Mint a one-time code and bounce them back. */
   app.post('/api/oauth/approve', auth, (req, res) => {
     const a = appByClientId.get(String(req.body.client_id || ''));

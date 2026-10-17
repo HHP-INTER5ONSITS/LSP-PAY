@@ -1459,9 +1459,11 @@ async function sheetDeveloper() {
           </div>`).join('')}</div>`
       : '<p class="empty">No apps registered yet.</p>'}
     <button id="add" class="btn-primary">Register an app</button>
+    <button id="try" class="btn-quiet">Try the sign-in flow</button>
     <button id="docs" class="btn-quiet">How to use it</button>
   `, (root) => {
     $('#add', root).addEventListener('click', () => sheetNewDevApp(scopes));
+    $('#try', root).addEventListener('click', () => window.open('/oauth/playground', '_blank'));
     $('#docs', root).addEventListener('click', () => window.open('/developers#lsp-oauth', '_blank'));
     root.querySelectorAll('[data-edit]').forEach((b) =>
       b.addEventListener('click', () => sheetEditDevApp(apps.find((a) => a.id === Number(b.dataset.edit)))));
