@@ -223,7 +223,7 @@ function showWallet() {
   loadHistory();
   refreshBell();
   if (user.pinIsDefault) {
-    setTimeout(() => toast('Your PIN is still 00000. Change it in Settings.'), 900);
+    setTimeout(() => toast('Your PIN is still 00000. Change it under Your account.'), 900);
   }
 }
 
@@ -661,7 +661,7 @@ function sheetTopUp(card) {
 /* ───────────────────────────── settings + PIN ─────────────────────────── */
 
 function sheetSettings() {
-  openSheet('Settings', `
+  openSheet('Your account', `
     <div class="kv"><span>Signed in as</span><span>${escapeHtml(user.email)}</span></div>
     <div class="kv"><span>Balance</span><span>${escapeHtml(user.balanceLabel)}</span></div>
     <div class="kv"><span>Points</span><span>${user.points.toLocaleString('en-IN')}</span></div>
@@ -1615,7 +1615,8 @@ const SHEETS = {
   request: sheetRequest,
   insights: sheetInsights,
   scheduled: sheetScheduled,
-  bank: sheetBank
+  bank: sheetBank,
+  account: sheetSettings
 };
 
 document.querySelectorAll('[data-open]').forEach((b) =>
@@ -1625,7 +1626,6 @@ document.querySelectorAll('[data-open]').forEach((b) =>
   })
 );
 
-el('btn-settings').addEventListener('click', sheetSettings);
 el('btn-bell').addEventListener('click', sheetNotifications);
 ['tx-search', 'tx-filter'].forEach((id) => el(id)?.addEventListener('input', paintHistory));
 el('tx-export')?.addEventListener('click', () => window.open('/api/statement.csv', '_blank'));
