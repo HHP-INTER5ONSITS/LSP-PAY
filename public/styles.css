@@ -578,34 +578,38 @@ input, select, textarea { font: inherit; color: inherit; }
   /* sign-in stays a centred card — a full desktop chrome would be silly here */
   #screen-auth { max-width: 440px; margin: 0 auto; padding: 30px 20px 60px; }
 
+  /* Two real columns. .top and .actions each get their own row in the
+     sidebar: layering them in the same cell put the header icons on top
+     of the last nav tiles and pushed Activity off the page. */
   #screen-app:not([hidden]) {
     display: grid;
     grid-template-columns: 236px 1fr;
+    grid-template-rows: auto 1fr;
     min-height: 100dvh;
   }
 
   /* left rail */
   #screen-app > .top {
-    grid-row: 1 / -1;
     grid-column: 1;
+    grid-row: 1;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
+    align-items: flex-start;
     justify-content: flex-start;
-    gap: 0;
-    padding: 26px 18px;
+    gap: 16px;
+    padding: 26px 18px 14px;
     border-right: 1px solid var(--line);
   }
-  #screen-app > .top .wordmark.small { font-size: 25px; margin-bottom: 4px; }
-  #screen-app > .top .head-tools { margin-top: auto; }
+  #screen-app > .top .wordmark.small { font-size: 25px; }
+  #screen-app > .top .head-tools { margin-top: 0; }
 
   .actions {
     grid-column: 1;
-    grid-row: 1 / -1;
-    align-self: start;
-    margin: 92px 18px 0;
+    grid-row: 2;
+    margin: 0;
+    padding: 0 14px 30px;
     border-top: none;
-    z-index: 1;
+    border-right: 1px solid var(--line);
   }
   .actions .action {
     padding: 10px 12px;
