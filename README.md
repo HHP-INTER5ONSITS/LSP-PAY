@@ -23,6 +23,7 @@ Built to run on a free Render web service with a GitHub repo behind it. Emails g
 | Saved payees | Anyone you pay is remembered as a quick-pick. |
 | Notifications | Payments, requests, sign-ins and automatic payments, in one place. |
 | Sign-in history | The last twenty sign-ins with address and device, so a stranger stands out. |
+| Ask LSP-Pay | An assistant in the wallet. Ask about your own spending, about the app, or anything else. |
 | Points | 5 points per ₹100 spent, on every one of the flows above. |
 
 **Desktop and mobile.** Below 900px it's a single column like a payment app. Above that it becomes a two-pane desktop layout — a nav rail on the left, balance and activity on the right — and sheets become centred dialogs instead of bottom sheets.
@@ -105,6 +106,18 @@ To see it work before wiring up another site, register an app whose redirect URL
 
 Scopes are `profile`, `email` and `wallet:read`. **None of them can move money or read a PIN** — there is no code path from a token to a payment. Redirect URLs must be registered and are matched exactly; codes are single-use and last 60 seconds; reusing one revokes the tokens it produced. Users see every app they've allowed under Settings and can cut it off, which kills live tokens immediately. Full docs at `/developers#lsp-oauth`.
 
+## Ask LSP-Pay — the assistant
+
+Set `GEMINI_API_KEY` in Render (get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) and a new tile appears at the top of the app. Without a key the tile explains it isn't set up rather than failing silently.
+
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` work instead if either is the one present; Gemini wins when more than one is set. Override the model with `GEMINI_MODEL`, `ANTHROPIC_MODEL` or `OPENAI_MODEL`.
+
+The key stays in the environment and every call is made from the server — a key shipped to a page is a key anyone can lift and spend.
+
+**The assistant cannot move money.** It has no tools and no write path: it is given a read-only summary of your own balance and recent activity so "where did my money go?" works, and that is all. It is also told never to ask for a PIN, a code or a card number. A chatbot that can move money is a chatbot that can be talked into moving money.
+
+If a reply says the model is unknown, sign in and open `/api/ai/models` to list what your key supports, then set `GEMINI_MODEL` to one of them.
+
 ## 1. Get a Resend API key
 
 1. Sign up at [resend.com](https://resend.com) and open **API Keys → Create API Key**.
@@ -179,6 +192,7 @@ src/db.js       SQLite schema
 src/mail.js     Resend calls and the email templates
 src/cards.js    card validation and the demo tokeniser
 src/oauth.js    GitHub and Google sign-in (we are the client)
+src/ai.js       the assistant, and the Gemini/Claude/OpenAI adapters
 src/idp.js      LSP OAuth — other apps sign in with LSP-Pay (we are the provider)
 src/gateway.js  merchant accounts, the public API, checkout and webhooks
 public/         the app itself — plain HTML, CSS and JS, no build step

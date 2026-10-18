@@ -718,3 +718,81 @@ input, select, textarea { font: inherit; color: inherit; }
   height: 1px;
   background: var(--line);
 }
+
+/* ──────────────────────────── ask lsp-pay ────────────────────────────── */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 190px;
+  max-height: 46dvh;
+  overflow-y: auto;
+  padding: 2px 2px 6px;
+  margin-bottom: 14px;
+}
+
+.bub {
+  max-width: 86%;
+  padding: 11px 14px;
+  border-radius: 15px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+/* --btn-face/--btn-text already flip correctly per theme; --ink does not,
+   because in light mode --ink IS the pale page colour. */
+.bub.me {
+  align-self: flex-end;
+  background: var(--btn-face);
+  color: var(--btn-text);
+  border-bottom-right-radius: 5px;
+}
+.bub.ai {
+  align-self: flex-start;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 5px;
+}
+.bub.thinking { color: var(--mist); font-style: italic; }
+.bub.oops { background: var(--bad-bg); border: 1px solid var(--bad-line); color: var(--bad-text); }
+
+.ask-row { display: flex; gap: 9px; align-items: flex-end; }
+.ask-row textarea {
+  flex: 1;
+  min-height: 46px;
+  max-height: 120px;
+  padding: 12px 14px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  resize: none;
+  outline: none;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.ask-row textarea:focus { border-color: var(--brass); box-shadow: 0 0 0 3px rgba(217,164,65,.16); }
+.ask-row button {
+  flex: none;
+  width: 46px; height: 46px;
+  display: grid; place-items: center;
+  background: var(--btn-face);
+  color: var(--btn-text);
+  border: none;
+  border-radius: var(--r);
+}
+.ask-row button:disabled { opacity: .5; }
+
+.starters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.starter {
+  padding: 8px 13px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--mist);
+  font-size: 13px;
+  text-align: left;
+}
+.starter:hover { border-color: var(--brass); color: var(--brass); }

@@ -1247,6 +1247,10 @@ require('./oauth')(app, {
   db, auth, fail, findUserByEmail, findUserById, createUser, setSession, publicUser, notify, IS_PROD
 });
 
+require('./ai')(app, {
+  db, auth, fail, inr, findUserById, rateLimit
+});
+
 require('./idp')(app, {
   db, auth, fail, inr, findUserById, notify, checkPin
 });

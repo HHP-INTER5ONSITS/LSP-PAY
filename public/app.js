@@ -1052,6 +1052,105 @@ async function refreshBell() {
   } catch { /* not signed in */ }
 }
 
+/* ───────────────────────────── ask lsp-pay ───────────────────────────── */
+
+const STARTERS = [
+  'What did I spend on this month?',
+  'How do I take payments on my website?',
+  'What is a FASTag?',
+  'Explain UPI in simple words'
+];
+
+async function sheetAsk() {
+  const [status, past] = await Promise.all([
+    api('/api/ai/status').catch(() => ({ ready: false, note: 'Could not reach the assistant.' })),
+    api('/api/ai/history').catch(() => ({ messages: [] }))
+  ]);
+
+  openSheet('Ask LSP-Pay', `
+    ${status.ready
+      ? `<p class="sheet-note">Ask anything — about your money, about the app, or about nothing to do with either. Answers come from ${escapeHtml(status.provider)}.</p>`
+      : `<p class="msg">${escapeHtml(status.note || 'The assistant is not set up on this server.')}</p>`}
+
+    <div class="chat" id="chat"></div>
+
+    ${past.messages.length ? '' : `<div class="starters">${STARTERS.map((q) =>
+      `<button class="starter" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join('')}</div>`}
+
+    <div class="ask-row">
+      <textarea id="ask" rows="1" placeholder="Ask anything…" ${status.ready ? '' : 'disabled'}></textarea>
+      <button id="send" aria-label="Send" ${status.ready ? '' : 'disabled'}>
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M12 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+
+    <p class="sheet-note" style="margin-top:14px">It can read your balance and recent activity to answer, but it cannot move money or change anything. Never give it your PIN or a code.</p>
+    ${past.messages.length ? '<button id="clear" class="btn-quiet">Clear this conversation</button>' : ''}
+  `, (root) => {
+    const chat = $('#chat', root);
+    const box = $('#ask', root);
+
+    const bubble = (role, text, cls = '') => {
+      const d = document.createElement('div');
+      d.className = `bub ${role === 'user' ? 'me' : 'ai'} ${cls}`.trim();
+      d.textContent = text;
+      chat.appendChild(d);
+      chat.scrollTop = chat.scrollHeight;
+      return d;
+    };
+
+    if (past.messages.length) past.messages.forEach((m) => bubble(m.role, m.text));
+    else if (status.ready) bubble('assistant', 'Ask me anything. I can see your balance and recent activity, so "where did my money go?" works too.');
+
+    // grow the box with the question, up to a point
+    box.addEventListener('input', () => {
+      box.style.height = 'auto';
+      box.style.height = Math.min(box.scrollHeight, 120) + 'px';
+    });
+
+    async function send(text) {
+      const q = (text || box.value).trim();
+      if (!q) return;
+
+      box.value = ''; box.style.height = 'auto';
+      $('.starters', root)?.remove();
+      bubble('user', q);
+
+      const pending = bubble('assistant', 'Thinking…', 'thinking');
+      $('#send', root).disabled = true;
+
+      try {
+        const out = await api('/api/ai/chat', { message: q });
+        pending.classList.remove('thinking');
+        pending.textContent = out.reply;
+      } catch (err) {
+        pending.classList.remove('thinking');
+        pending.classList.add('oops');
+        pending.textContent = err.message;
+      } finally {
+        $('#send', root).disabled = false;
+        chat.scrollTop = chat.scrollHeight;
+        box.focus();
+      }
+    }
+
+    $('#send', root).addEventListener('click', () => send());
+    box.addEventListener('keydown', (e) => {
+      // Enter sends, Shift+Enter makes a new line.
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    root.querySelectorAll('.starter').forEach((b) =>
+      b.addEventListener('click', () => send(b.dataset.q)));
+
+    $('#clear', root)?.addEventListener('click', async () => {
+      await api('/api/ai/clear', {});
+      closeSheet(); toast('Conversation cleared.');
+    });
+
+    if (status.ready) setTimeout(() => box.focus(), 120);
+  });
+}
+
 /* ─────────────────────────── 8. business gateway ─────────────────────── */
 
 async function sheetBusiness() {
@@ -1618,7 +1717,8 @@ const SHEETS = {
   insights: sheetInsights,
   scheduled: sheetScheduled,
   bank: sheetBank,
-  account: sheetSettings
+  account: sheetSettings,
+  ask: sheetAsk
 };
 
 document.querySelectorAll('[data-open]').forEach((b) =>
