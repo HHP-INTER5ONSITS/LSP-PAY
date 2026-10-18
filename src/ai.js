@@ -23,10 +23,13 @@ const PROVIDERS = {
     modelEnv: 'GEMINI_MODEL',
 
     async ask({ key, model, system, history, message }) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+      // The key goes in a header, not the query string. Google's newer
+      // AQ. authentication keys reject ?key=, and a key in a URL ends up
+      // in logs and referrers. The header works for both key types.
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [
@@ -44,6 +47,8 @@ const PROVIDERS = {
           res.status === 404
             ? `Gemini does not know the model "${model}". Set GEMINI_MODEL to one your key can use.`
             : res.status === 400 && /API key/i.test(detail) ? 'That Gemini API key was rejected.'
+            : res.status === 401 ? `Gemini rejected the key: ${detail}. If it begins "AQ.", check it was copied whole.`
+            : res.status === 403 ? `Gemini refused the key: ${detail}. A new key can take a minute, and some need the Generative Language API enabled on its Cloud project.`
             : res.status === 429 ? 'Gemini is rate limiting this key. Try again shortly.'
             : `Gemini said: ${detail}`
         );
@@ -235,7 +240,9 @@ ${context(user)}`;
     if (p.name !== 'gemini') return res.json({ provider: p.label, models: [p.model] });
 
     try {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(p.key)}`);
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+        headers: { 'x-goog-api-key': p.key }
+      });
       const b = await r.json().catch(() => ({}));
       if (!r.ok) return fail(res, 502, b?.error?.message || `HTTP ${r.status}`);
 

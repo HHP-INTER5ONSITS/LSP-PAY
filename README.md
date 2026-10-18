@@ -112,6 +112,8 @@ Set `GEMINI_API_KEY` in Render (get one free at [aistudio.google.com/apikey](htt
 
 `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` work instead if either is the one present; Gemini wins when more than one is set. Override the model with `GEMINI_MODEL`, `ANTHROPIC_MODEL` or `OPENAI_MODEL`.
 
+Google now issues **authentication keys beginning `AQ.`** and is retiring the older `AIzaSy` ones. Both work here: the key is sent in the `x-goog-api-key` header rather than as a `?key=` query parameter, which is what the current docs specify and what `AQ.` keys require. It also keeps the key out of URLs, where it would otherwise end up in server logs.
+
 The key stays in the environment and every call is made from the server — a key shipped to a page is a key anyone can lift and spend.
 
 **The assistant cannot move money.** It has no tools and no write path: it is given a read-only summary of your own balance and recent activity so "where did my money go?" works, and that is all. It is also told never to ask for a PIN, a code or a card number. A chatbot that can move money is a chatbot that can be talked into moving money.
