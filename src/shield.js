@@ -21,6 +21,11 @@
  *      bot that fills in every input it finds.
  *   4. Disposable-address rejection, so throwaway inboxes cannot be used to
  *      mint wallets in bulk.
+ *   5. Cloudflare Turnstile, when TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY
+ *      are set. Cloudflare sees traffic across millions of sites, so its
+ *      judgement of a visitor is far better than anything inferable from one
+ *      address here. When it is on, the proof of work drops to a token cost:
+ *      two defences doing the same job twice only taxes real people.
  *
  * Challenges are HMAC-signed, so the server does not have to remember every
  * one it issued, and each may be spent once, so a solved challenge cannot be
@@ -30,6 +35,43 @@
 const crypto = require('crypto');
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const TURNSTILE_VERIFY = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+
+const turnstile = () => ({
+  siteKey: process.env.TURNSTILE_SITE_KEY || null,
+  secret: process.env.TURNSTILE_SECRET_KEY || null
+});
+const turnstileOn = () => Boolean(turnstile().siteKey && turnstile().secret);
+
+/**
+ * Checks a Turnstile token with Cloudflare. Tokens last five minutes and may
+ * be spent once; Cloudflare enforces both, so there is nothing to track here.
+ */
+async function checkTurnstile(token, ip) {
+  const { secret } = turnstile();
+  if (!token || typeof token !== 'string' || token.length > 2048)
+    return { ok: false, why: 'missing-token' };
+
+  try {
+    const res = await fetch(TURNSTILE_VERIFY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: AbortSignal.timeout(10000),
+      body: new URLSearchParams({ secret, response: token, remoteip: ip || '' })
+    });
+    if (!res.ok) return { ok: false, why: `http-${res.status}` };
+
+    const body = await res.json();
+    return body.success
+      ? { ok: true }
+      : { ok: false, why: (body['error-codes'] || []).join(',') || 'rejected' };
+  } catch (err) {
+    // Cloudflare being unreachable must not lock everyone out: the proof of
+    // work and the other checks still stand on their own.
+    console.error('[shield] turnstile unreachable:', err.message);
+    return { ok: true, degraded: true };
+  }
+}
 const SECRET = process.env.SHIELD_SECRET || process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 
 /**
@@ -96,8 +138,15 @@ module.exports = function mountShield(app, deps) {
     const n = recentAttempts(ip);
     let work = DIFFICULTY_STEPS[0].work;
     for (const step of DIFFICULTY_STEPS) if (n >= step.after) work = step.work;
-    return work;
+    // Turnstile is the stronger signal; keep the puzzle nominal so the two
+    // layers do not tax a real person twice for the same assurance.
+    return turnstileOn() ? Math.min(work, 2000) : work;
   }
+
+  /** What the sign-in page needs to know before it can submit. */
+  app.get('/api/shield/config', (req, res) => {
+    res.json({ turnstileSiteKey: turnstile().siteKey });
+  });
 
   /** Hands out a signed challenge. Cheap, so it can be rate limited loosely. */
   app.get('/api/shield/challenge', rateLimit({ windowMs: 60 * 1000, limit: 30, legacyHeaders: false, standardHeaders: true }), (req, res) => {
@@ -157,7 +206,7 @@ module.exports = function mountShield(app, deps) {
    * Express middleware for a door worth protecting. Runs the honeypot and
    * timing checks first, since they cost nothing.
    */
-  function guard(req, res, next) {
+  async function guard(req, res, next) {
     const ip = ipOf(req);
 
     // A hidden field no person can see, let alone fill in.
@@ -170,6 +219,14 @@ module.exports = function mountShield(app, deps) {
 
     const problem = verify(req);
     if (problem) return fail(res, 400, problem);
+
+    if (turnstileOn()) {
+      const out = await checkTurnstile(req.body?.turnstileToken, ip);
+      if (!out.ok) {
+        console.warn('[shield] turnstile refused', out.why, 'from', ip);
+        return fail(res, 400, 'The security check did not pass. Reload and try again.');
+      }
+    }
 
     db.prepare('INSERT INTO shield_attempts (ip, at) VALUES (?, ?)').run(ip, Date.now());
     next();
@@ -189,5 +246,5 @@ module.exports = function mountShield(app, deps) {
     db.prepare('DELETE FROM shield_attempts WHERE at < ?').run(now - 24 * 60 * 60 * 1000);
   }, 10 * 60 * 1000).unref();
 
-  return { guard, verify, emailAllowed, difficultyFor, ipOf };
+  return { guard, verify, emailAllowed, difficultyFor, ipOf, turnstileOn };
 };

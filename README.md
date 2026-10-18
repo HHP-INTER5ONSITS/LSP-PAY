@@ -132,6 +132,10 @@ The sign-in endpoint is the expensive door: every request there sends an email t
 
 **Disposable-address rejection**, so throwaway inboxes cannot mint wallets in bulk.
 
+**Cloudflare Turnstile**, if you want it. Set `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` and a fifth layer switches on; leave them empty and nothing changes. Cloudflare sees traffic across millions of sites, so its read on a visitor beats anything inferable from one address here — and when it is on, the proof of work drops to a nominal cost, because two defences doing the same job only tax real people twice.
+
+Create the widget at **dash.cloudflare.com → Turnstile → Add widget**, with your Render hostname under Hostname management. The widget is set to `interaction-only`, so most people see nothing at all. Tokens are verified server-side against Cloudflare's siteverify endpoint, which is the half that actually protects anything — the widget alone does not, since a script can post straight to the endpoint. If Cloudflare cannot be reached from the server the request is allowed through and logged, because an outage at Cloudflare should not lock out your users; the other four layers still apply.
+
 Challenges are HMAC-signed so the server stores nothing, expire after five minutes, and may be spent once. Set `SHIELD_SECRET` to pin the signing key across restarts; it falls back to `JWT_SECRET`.
 
 ## 1. Get a Resend API key

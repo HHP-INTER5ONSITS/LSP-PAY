@@ -60,6 +60,47 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !el('sheet').hidden) closeSheet();
 });
 
+/* ───────────────────── Cloudflare Turnstile, if configured ───────────── */
+
+let shieldConfig = null;
+let turnstileWidget = null;
+
+async function setUpTurnstile() {
+  try { shieldConfig = await api('/api/shield/config'); } catch { return; }
+  if (!shieldConfig.turnstileSiteKey) return;   // not configured: nothing to do
+
+  await new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.async = true; s.defer = true;
+    s.onload = resolve;
+    s.onerror = resolve;   // unreachable: the server falls back to the other layers
+    document.head.appendChild(s);
+  });
+
+  const host = el('turnstile-slot');
+  if (!host || !window.turnstile) return;
+
+  turnstileWidget = window.turnstile.render(host, {
+    sitekey: shieldConfig.turnstileSiteKey,
+    theme: 'auto',
+    appearance: 'interaction-only'   // shown only when a visitor looks doubtful
+  });
+}
+
+/** The current token, or '' when Turnstile is off or could not load. */
+function turnstileToken() {
+  if (!turnstileWidget || !window.turnstile) return '';
+  try { return window.turnstile.getResponse(turnstileWidget) || ''; }
+  catch { return ''; }
+}
+
+function resetTurnstile() {
+  if (turnstileWidget && window.turnstile) {
+    try { window.turnstile.reset(turnstileWidget); } catch { /* ignore */ }
+  }
+}
+
 /* ───────────────────────── the security check ────────────────────────── */
 
 /**
@@ -111,6 +152,7 @@ async function requestLoginCode() {
     const out = await api('/api/auth/request-code', {
       email,
       website: el('hp')?.value || '',   // honeypot: must stay empty
+      turnstileToken: turnstileToken(),
       ...proof
     });
     el('auth-target').textContent = out.email;
@@ -121,6 +163,7 @@ async function requestLoginCode() {
     authMessage(out.devCode ? `Development mode: your code is ${out.devCode}` : out.note, !out.note);
   } catch (err) {
     authMessage(err.message);
+    resetTurnstile();   // a token is single use; a retry needs a fresh one
   } finally {
     btn.disabled = false;
     btn.textContent = label;
@@ -1778,5 +1821,6 @@ el('tx-export')?.addEventListener('click', () => window.open('/api/statement.csv
   } catch {
     el('screen-auth').hidden = false;
     setUpOAuth();
+    setUpTurnstile();
   }
 })();
