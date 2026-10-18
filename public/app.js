@@ -60,6 +60,34 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !el('sheet').hidden) closeSheet();
 });
 
+/* ───────────────────────── the security check ────────────────────────── */
+
+/**
+ * Finds a nonce whose SHA-256 starts with the required zeros. A person waits
+ * a fraction of a second; a bot pays that for every attempt it makes, which
+ * is the whole point.
+ */
+async function solveChallenge() {
+  const c = await api('/api/shield/challenge');
+  const enc = new TextEncoder();
+
+  // Hashing in batches rather than one await at a time: the per-call promise
+  // overhead dominates otherwise, and made the harder levels take seconds
+  // instead of milliseconds.
+  const BATCH = 1024;
+  for (let n = 0; n < 20_000_000; n += BATCH) {
+    const digests = await Promise.all(
+      Array.from({ length: BATCH }, (_, i) =>
+        crypto.subtle.digest('SHA-256', enc.encode(`${c.challenge}:${n + i}`)))
+    );
+    for (let i = 0; i < digests.length; i++) {
+      if ((new DataView(digests[i]).getUint32(0) >>> 8) <= c.ceiling)
+        return { shieldToken: c.token, shieldSolution: String(n + i) };
+    }
+  }
+  throw new Error('Could not complete the security check.');
+}
+
 /* ──────────────────────────────── sign in ─────────────────────────────── */
 
 function authMessage(text, good = false) {
@@ -73,9 +101,18 @@ function authMessage(text, good = false) {
 async function requestLoginCode() {
   const email = el('auth-email').value.trim();
   const btn = el('auth-send');
+  const label = btn.textContent;
   btn.disabled = true;
   try {
-    const out = await api('/api/auth/request-code', { email });
+    btn.textContent = 'Checking…';
+    const proof = await solveChallenge();
+
+    btn.textContent = 'Sending…';
+    const out = await api('/api/auth/request-code', {
+      email,
+      website: el('hp')?.value || '',   // honeypot: must stay empty
+      ...proof
+    });
     el('auth-target').textContent = out.email;
     el('auth-step-email').hidden = true;
     el('auth-step-code').hidden = false;
@@ -86,6 +123,7 @@ async function requestLoginCode() {
     authMessage(err.message);
   } finally {
     btn.disabled = false;
+    btn.textContent = label;
   }
 }
 

@@ -53,6 +53,11 @@
           <span>Email address</span>
           <input id="auth-email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" />
         </label>
+        <!-- Honeypot. Hidden from people and from screen readers; bots that
+             fill every field they find give themselves away here. -->
+        <div aria-hidden="true" style="position:absolute;left:-9999px;top:-9999px;height:0;overflow:hidden">
+          <label>Website<input id="hp" name="website" type="text" tabindex="-1" autocomplete="off" /></label>
+        </div>
         <button id="auth-send" class="btn-primary">Send code</button>
       </div>
 

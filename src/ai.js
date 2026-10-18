@@ -19,7 +19,7 @@ const PROVIDERS = {
   gemini: {
     label: 'Gemini',
     env: 'GEMINI_API_KEY',
-    defaultModel: 'gemini-2.0-flash',
+    defaultModel: 'gemini-flash-latest',
     modelEnv: 'GEMINI_MODEL',
 
     async ask({ key, model, system, history, message }) {
@@ -43,15 +43,21 @@ const PROVIDERS = {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         const detail = body?.error?.message || `HTTP ${res.status}`;
-        throw new Error(
+
+        // Tag the two conditions worth recovering from rather than reporting.
+        const err = new Error('');
+        if (res.status === 404) err.kind = 'model';
+        else if (res.status === 503 || res.status === 429 || /overload|high demand|try again/i.test(detail)) err.kind = 'busy';
+
+        err.message = 
           res.status === 404
             ? `Gemini does not know the model "${model}". Set GEMINI_MODEL to one your key can use.`
             : res.status === 400 && /API key/i.test(detail) ? 'That Gemini API key was rejected.'
             : res.status === 401 ? `Gemini rejected the key: ${detail}. If it begins "AQ.", check it was copied whole.`
             : res.status === 403 ? `Gemini refused the key: ${detail}. A new key can take a minute, and some need the Generative Language API enabled on its Cloud project.`
             : res.status === 429 ? 'Gemini is rate limiting this key. Try again shortly.'
-            : `Gemini said: ${detail}`
-        );
+            : `Gemini said: ${detail}`;
+        throw err;
       }
 
       const text = body?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join('');
@@ -134,6 +140,85 @@ function active() {
     }
   }
   return null;
+}
+
+
+/**
+ * Asks a Gemini model, recovering from the two things that go wrong on
+ * their own: the configured model no longer existing, and the model being
+ * temporarily full. Both used to surface as a dead end the operator had to
+ * fix by hand.
+ *
+ * Model names change often enough that a hardcoded default is a losing bet,
+ * so on a 404 we ask the key what it can actually use and prefer a Flash
+ * model — fast and cheap, which is what short wallet questions want.
+ */
+const FALLBACK_ORDER = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+let discovered = null;   // cached per process, so we ask Google once
+
+async function listGeminiModels(key) {
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+    headers: { 'x-goog-api-key': key }
+  });
+  if (!r.ok) return [];
+  const b = await r.json().catch(() => ({}));
+  return (b.models || [])
+    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m) => m.name.replace(/^models\//, ''));
+}
+
+/** Flash first, previews and specialised variants last. */
+function rankModels(names) {
+  const bad = /tts|image|audio|video|embed|robotics|computer-use|deep-research|lyria|banana|transcribe|omni/i;
+  return names
+    .filter((n) => !bad.test(n))
+    .sort((a, b) => {
+      const score = (n) =>
+        (/flash/i.test(n) ? 0 : 10) +
+        (/lite/i.test(n) ? 1 : 0) +
+        (/preview|exp/i.test(n) ? 5 : 0) +
+        (/latest/i.test(n) ? -1 : 0);
+      return score(a) - score(b);
+    });
+}
+
+async function askWithRecovery(provider, args) {
+  if (provider.name !== 'gemini') return provider.ask({ ...args, key: provider.key, model: provider.model });
+
+  const tried = new Set();
+  const queue = [provider.model, ...FALLBACK_ORDER.filter((m) => m !== provider.model)];
+
+  for (let i = 0; i < queue.length + 4; i++) {
+    const model = queue.find((m) => m && !tried.has(m));
+    if (!model) break;
+    tried.add(model);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const text = await provider.ask({ ...args, key: provider.key, model });
+        if (model !== provider.model) console.log(`[ai] fell back to ${model}`);
+        return text;
+      } catch (err) {
+        if (err.kind === 'busy' && attempt < 2) {
+          // Short, increasing pause. A spike is usually over in a moment.
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          continue;
+        }
+        if (err.kind === 'busy') break;          // that model is full; try the next
+        if (err.kind === 'model') {
+          // Ask the key what it really has, once, then queue the best of them.
+          if (!discovered) discovered = rankModels(await listGeminiModels(provider.key));
+          discovered.forEach((m) => { if (!queue.includes(m)) queue.push(m); });
+          break;
+        }
+        throw err;                                // a key or safety problem: say so
+      }
+    }
+  }
+
+  const err = new Error('Gemini is busy on every model this key can use. Try again in a minute.');
+  err.kind = 'busy';
+  throw err;
 }
 
 module.exports = function mountAI(app, deps) {
@@ -274,13 +359,7 @@ ${context(user)}`;
 
     let reply;
     try {
-      reply = await provider.ask({
-        key: provider.key,
-        model: provider.model,
-        system: SYSTEM(user),
-        history,
-        message
-      });
+      reply = await askWithRecovery(provider, { system: SYSTEM(user), history, message });
     } catch (err) {
       console.error('[ai]', provider.name, err.message);
       return fail(res, 502, err.message);

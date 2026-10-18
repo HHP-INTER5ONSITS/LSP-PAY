@@ -118,7 +118,21 @@ The key stays in the environment and every call is made from the server — a ke
 
 **The assistant cannot move money.** It has no tools and no write path: it is given a read-only summary of your own balance and recent activity so "where did my money go?" works, and that is all. It is also told never to ask for a PIN, a code or a card number. A chatbot that can move money is a chatbot that can be talked into moving money.
 
-If a reply says the model is unknown, sign in and open `/api/ai/models` to list what your key supports, then set `GEMINI_MODEL` to one of them.
+The assistant recovers from the two things that break on their own. If the configured model no longer exists, it asks your key what it can actually use, prefers a Flash model and carries on. If a model is temporarily full it retries, then tries the next one. `/api/ai/models` still lists what your key supports if you want to pin one with `GEMINI_MODEL`.
+
+## Bot protection
+
+The sign-in endpoint is the expensive door: every request there sends an email through Resend and can mint a wallet. Four layers guard it, none of which makes a person identify traffic lights.
+
+**Proof of work.** The browser must find a nonce whose SHA-256 falls under a ceiling before the server will act. A first-time visitor waits about 150ms. A script pays that for every attempt, which is what turns a flood from free into expensive.
+
+**Adaptive difficulty.** The work rises with recent attempts from an address — roughly 1,000 hashes, then 8,000, 50,000 and 200,000. The top step stays deliberately mild, because difficulty is keyed on address and plenty of real people share one; mobile carriers especially. Measured end to end in a browser: 154ms at the first level, 651ms at the third.
+
+**A honeypot field**, hidden from people and from screen readers. A bot that fills every input gives itself away, and is then answered as though it succeeded — one that knows it was caught adapts, one that thinks it worked keeps wasting its time.
+
+**Disposable-address rejection**, so throwaway inboxes cannot mint wallets in bulk.
+
+Challenges are HMAC-signed so the server stores nothing, expire after five minutes, and may be spent once. Set `SHIELD_SECRET` to pin the signing key across restarts; it falls back to `JWT_SECRET`.
 
 ## 1. Get a Resend API key
 
@@ -194,6 +208,7 @@ src/db.js       SQLite schema
 src/mail.js     Resend calls and the email templates
 src/cards.js    card validation and the demo tokeniser
 src/oauth.js    GitHub and Google sign-in (we are the client)
+src/shield.js   proof of work, honeypot and disposable-address checks
 src/ai.js       the assistant, and the Gemini/Claude/OpenAI adapters
 src/idp.js      LSP OAuth — other apps sign in with LSP-Pay (we are the provider)
 src/gateway.js  merchant accounts, the public API, checkout and webhooks

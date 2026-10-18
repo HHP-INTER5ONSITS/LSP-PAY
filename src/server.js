@@ -323,11 +323,17 @@ const payLimiter = rateLimit({
   handler: limitJson('Too many payments in a minute. Wait a moment and try again.')
 });
 
+/* ---------------------------------------------------------------- shield */
+
+const shield = require('./shield')(app, { db, fail, rateLimit });
+
 /* ------------------------------------------------------------------ auth  */
 
-app.post('/api/auth/request-code', codeLimiter, async (req, res) => {
+app.post('/api/auth/request-code', codeLimiter, shield.guard, async (req, res) => {
   const email = normEmail(req.body.email);
   if (!validEmail(email)) return fail(res, 400, 'Enter a valid email address.');
+  if (!shield.emailAllowed(email))
+    return fail(res, 400, 'That looks like a disposable address. Use one you can receive mail at.');
 
   const out = await issueCode(email, 'login', mail.sendLoginCode);
   if (!out.ok) return fail(res, out.status, out.message);
