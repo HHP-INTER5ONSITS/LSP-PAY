@@ -1279,10 +1279,21 @@ app.get('/developers', (req, res) =>
   res.sendFile(path.join(__dirname, '..', 'public', 'developers.html'))
 );
 
-app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: IS_PROD ? '1h' : 0 }));
+// HTML, JS and CSS are revalidated on every request; only media is cached
+// outright. An hour-long cache on app.js meant a deploy could take an hour
+// to reach anyone, so fixes looked as though they had not worked.
+app.use(express.static(path.join(__dirname, '..', 'public'), {
+  etag: true,
+  lastModified: true,
+  setHeaders(res, filePath) {
+    if (/\.(html|js|css)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    else res.setHeader('Cache-Control', IS_PROD ? 'public, max-age=86400' : 'no-cache');
+  }
+}));
 
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) return fail(res, 404, 'No such endpoint.');
+  res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 

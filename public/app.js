@@ -83,7 +83,13 @@ async function setUpTurnstile() {
   if (!shieldConfig.turnstileSiteKey) return;   // not configured: nothing to do
 
   const host = el('turnstile-slot');
-  if (!host) return;
+  if (!host) {
+    // The slot ships in index.html alongside this file. Missing it almost
+    // always means a stale cached page, which is worth saying out loud.
+    console.warn('[turnstile] no #turnstile-slot in the page — the HTML may be a cached older version');
+    authMessage('The page is out of date. Reload with Cmd+Shift+R (or Ctrl+F5) to pick up the latest version.');
+    return;
+  }
 
   // The script's own load event fires before window.turnstile exists, so
   // waiting on it and then checking for the object silently does nothing.
