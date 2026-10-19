@@ -64,6 +64,19 @@ document.addEventListener('keydown', (e) => {
 
 let shieldConfig = null;
 let turnstileWidget = null;
+let turnstilePending = null;   // resolves with a token when Cloudflare finishes
+
+/**
+ * Turnstile solves asynchronously after the widget renders. Reading
+ * getResponse() at the moment someone presses the button returns nothing if
+ * they were quick, which is most people — so the token is captured from the
+ * callback and awaited instead.
+ */
+function freshTurnstilePromise() {
+  turnstilePending = {};
+  turnstilePending.promise = new Promise((resolve) => { turnstilePending.resolve = resolve; });
+  return turnstilePending.promise;
+}
 
 async function setUpTurnstile() {
   try { shieldConfig = await api('/api/shield/config'); } catch { return; }
@@ -81,23 +94,56 @@ async function setUpTurnstile() {
   const host = el('turnstile-slot');
   if (!host || !window.turnstile) return;
 
+  freshTurnstilePromise();
   turnstileWidget = window.turnstile.render(host, {
     sitekey: shieldConfig.turnstileSiteKey,
     theme: 'auto',
-    appearance: 'interaction-only'   // shown only when a visitor looks doubtful
+    appearance: 'interaction-only',   // shown only when a visitor looks doubtful
+    callback: (token) => turnstilePending?.resolve(token),
+    'error-callback': () => turnstilePending?.resolve(''),
+    'expired-callback': () => { freshTurnstilePromise(); resetTurnstile(); }
   });
 }
 
-/** The current token, or '' when Turnstile is off or could not load. */
-function turnstileToken() {
+/**
+ * The token, waiting for it if Cloudflare is still working. Returns '' when
+ * Turnstile is switched off, failed to load, or took too long — the server
+ * decides what to do about that, since only it knows whether Turnstile is
+ * required at all.
+ */
+async function turnstileToken(waitMs = 12000) {
   if (!turnstileWidget || !window.turnstile) return '';
-  try { return window.turnstile.getResponse(turnstileWidget) || ''; }
-  catch { return ''; }
+
+  // Already solved?
+  try {
+    const have = window.turnstile.getResponse(turnstileWidget);
+    if (have) return have;
+  } catch { /* widget not ready */ }
+
+  const timeout = new Promise((r) => setTimeout(() => r(''), waitMs));
+  const token = await Promise.race([turnstilePending?.promise ?? Promise.resolve(''), timeout]);
+
+  // Nothing came back in time, so stop hiding the widget and let the person
+  // finish it themselves rather than leaving them stuck on a silent failure.
+  if (!token && window.turnstile) {
+    try {
+      window.turnstile.remove(turnstileWidget);
+      freshTurnstilePromise();
+      turnstileWidget = window.turnstile.render(el('turnstile-slot'), {
+        sitekey: shieldConfig.turnstileSiteKey,
+        theme: 'auto',
+        appearance: 'always',
+        callback: (t) => turnstilePending?.resolve(t)
+      });
+    } catch { /* leave it as it was */ }
+  }
+  return token;
 }
 
 function resetTurnstile() {
   if (turnstileWidget && window.turnstile) {
-    try { window.turnstile.reset(turnstileWidget); } catch { /* ignore */ }
+    try { window.turnstile.reset(turnstileWidget); freshTurnstilePromise(); }
+    catch { /* ignore */ }
   }
 }
 
@@ -148,11 +194,14 @@ async function requestLoginCode() {
     btn.textContent = 'Checking…';
     const proof = await solveChallenge();
 
+    btn.textContent = 'Checking…';
+    const tsToken = await turnstileToken();
+
     btn.textContent = 'Sending…';
     const out = await api('/api/auth/request-code', {
       email,
       website: el('hp')?.value || '',   // honeypot: must stay empty
-      turnstileToken: turnstileToken(),
+      turnstileToken: tsToken,
       ...proof
     });
     el('auth-target').textContent = out.email;

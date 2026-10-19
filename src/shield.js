@@ -224,7 +224,12 @@ module.exports = function mountShield(app, deps) {
       const out = await checkTurnstile(req.body?.turnstileToken, ip);
       if (!out.ok) {
         console.warn('[shield] turnstile refused', out.why, 'from', ip);
-        return fail(res, 400, 'The security check did not pass. Reload and try again.');
+        // Say which of the two it was. A spent or stale token just needs a
+        // reload; no token at all usually means the browser could not reach
+        // Cloudflare, and that person needs to know it is not their fault.
+        return fail(res, 400, out.why === 'missing-token'
+          ? 'The security check could not run. Your browser may be blocking challenges.cloudflare.com — try another network or browser.'
+          : 'The security check expired. Reload the page and try again.');
       }
     }
 
