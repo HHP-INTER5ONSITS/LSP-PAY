@@ -126,7 +126,12 @@ async function setUpTurnstile() {
     turnstileWidget = window.turnstile.render(host, {
       sitekey: shieldConfig.turnstileSiteKey,
       theme: 'auto',
-      appearance: 'interaction-only',   // shown only when a visitor looks doubtful
+      // 'always' so the widget is visible and people can see the check
+      // happening. Cloudflare still decides how hard it is: most visitors
+      // get a tick that completes itself, only doubtful ones are asked to
+      // do anything. 'interaction-only' hides it entirely, which is tidier
+      // but leaves no way to tell working from broken.
+      appearance: 'always',
       callback: (token) => turnstilePending?.resolve(token),
       'error-callback': () => turnstilePending?.resolve(''),
       'expired-callback': () => { freshTurnstilePromise(); resetTurnstile(); }
