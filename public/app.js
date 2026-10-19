@@ -82,27 +82,53 @@ async function setUpTurnstile() {
   try { shieldConfig = await api('/api/shield/config'); } catch { return; }
   if (!shieldConfig.turnstileSiteKey) return;   // not configured: nothing to do
 
-  await new Promise((resolve) => {
+  const host = el('turnstile-slot');
+  if (!host) return;
+
+  // The script's own load event fires before window.turnstile exists, so
+  // waiting on it and then checking for the object silently does nothing.
+  // Cloudflare's documented signal is an onload callback named in the URL.
+  const ready = new Promise((resolve) => {
+    window.__lspTurnstileReady = () => resolve(true);
+
     const s = document.createElement('script');
-    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=__lspTurnstileReady';
     s.async = true; s.defer = true;
-    s.onload = resolve;
-    s.onerror = resolve;   // unreachable: the server falls back to the other layers
+    s.onerror = () => resolve(false);
     document.head.appendChild(s);
+
+    // Belt and braces: some blockers load the file but never fire the
+    // callback, so poll for the object too.
+    let waited = 0;
+    const poll = setInterval(() => {
+      if (window.turnstile) { clearInterval(poll); resolve(true); }
+      else if ((waited += 200) > 8000) { clearInterval(poll); resolve(false); }
+    }, 200);
   });
 
-  const host = el('turnstile-slot');
-  if (!host || !window.turnstile) return;
+  const ok = await ready;
+  if (!ok || !window.turnstile) {
+    // Say so rather than failing mutely: the server will refuse the sign-in
+    // and the person deserves to know it is the check, not their email.
+    console.warn('[turnstile] could not load — challenges.cloudflare.com may be blocked');
+    authMessage('The security check could not load. Something may be blocking challenges.cloudflare.com — try another browser or network.');
+    return;
+  }
 
   freshTurnstilePromise();
-  turnstileWidget = window.turnstile.render(host, {
-    sitekey: shieldConfig.turnstileSiteKey,
-    theme: 'auto',
-    appearance: 'interaction-only',   // shown only when a visitor looks doubtful
-    callback: (token) => turnstilePending?.resolve(token),
-    'error-callback': () => turnstilePending?.resolve(''),
-    'expired-callback': () => { freshTurnstilePromise(); resetTurnstile(); }
-  });
+  try {
+    turnstileWidget = window.turnstile.render(host, {
+      sitekey: shieldConfig.turnstileSiteKey,
+      theme: 'auto',
+      appearance: 'interaction-only',   // shown only when a visitor looks doubtful
+      callback: (token) => turnstilePending?.resolve(token),
+      'error-callback': () => turnstilePending?.resolve(''),
+      'expired-callback': () => { freshTurnstilePromise(); resetTurnstile(); }
+    });
+  } catch (err) {
+    console.warn('[turnstile] render failed:', err?.message || err);
+    authMessage('The security check could not start. Reload the page, or tell the site owner the Turnstile hostname may not match.');
+  }
 }
 
 /**
