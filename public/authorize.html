@@ -64,8 +64,19 @@ function bounceDenied() {
 }
 
 const mark = (logo, fallback) => logo
-  ? `<img class="az-mark" src="${esc(logo)}" alt="" />`
+  ? `<img class="az-mark" src="${esc(logo)}" alt="" data-fallback="${esc(fallback)}" />`
   : `<div class="az-mark">${esc(fallback)}</div>`;
+
+// A logo URL that doesn't load would leave an empty box. Show the app's
+// first letter instead. (Image errors don't bubble, so listen while capturing.)
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement) || img.dataset.fallback === undefined) return;
+  const box = document.createElement('div');
+  box.className = 'az-mark';
+  box.textContent = img.dataset.fallback;
+  img.replaceWith(box);
+}, true);
 
 (async function () {
   let d;
