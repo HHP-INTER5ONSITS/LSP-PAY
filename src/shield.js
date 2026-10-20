@@ -152,6 +152,28 @@ module.exports = function mountShield(app, deps) {
     return n >= STRIKE_LIMIT;
   }
 
+  /**
+   * Seconds until this address is clear. The block lifts when enough strikes
+   * have aged out of the window to drop under the limit, so the honest answer
+   * is when the (LIMIT-th newest) strike finally expires — not a fixed timer.
+   */
+  function blockSecondsLeft(ip) {
+    const rows = db
+      .prepare('SELECT at FROM shield_strikes WHERE ip = ? AND at > ? ORDER BY at DESC')
+      .all(ip, Date.now() - STRIKE_WINDOW_MS);
+    if (rows.length < STRIKE_LIMIT) return 0;
+    // Once the strike at index LIMIT-1 (the oldest one still counting) ages
+    // out, the count drops below the limit and sign-in is allowed again.
+    const clearsAt = rows[STRIKE_LIMIT - 1].at + STRIKE_WINDOW_MS;
+    return Math.max(0, Math.ceil((clearsAt - Date.now()) / 1000));
+  }
+
+  // The block page asks how long is really left, instead of guessing.
+  app.get('/api/shield/blocked', (req, res) => {
+    const ip = ipOf(req);
+    res.json({ blocked: isBlocked(ip), secondsLeft: blockSecondsLeft(ip) });
+  });
+
   function recentAttempts(ip) {
     return db
       .prepare('SELECT COUNT(*) n FROM shield_attempts WHERE ip = ? AND at > ?')

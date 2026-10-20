@@ -57,15 +57,16 @@
 </div>
 
 <script>
-  // A local, optimistic countdown. The real limit is enforced by the server;
-  // this is just so the page is not a dead end a person stares at.
-  var left = 15 * 60;
+  // The countdown is the server's real answer, not a guess. It is re-checked
+  // on load and every 15 seconds, so the page cannot say "ready" while the
+  // block still stands, or hold someone after it has lifted.
   var el = document.getElementById('count');
   var btn = document.getElementById('retry');
-  var t = setInterval(function () {
-    left -= 1;
+  var left = 0;
+  var tick = null;
+
+  function paint() {
     if (left <= 0) {
-      clearInterval(t);
       el.textContent = 'Ready';
       btn.disabled = false;
       btn.textContent = 'Back to sign in';
@@ -73,7 +74,23 @@
     }
     var m = Math.floor(left / 60), s = left % 60;
     el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
-  }, 1000);
+  }
+
+  async function sync() {
+    try {
+      var r = await fetch('/api/shield/blocked', { cache: 'no-store' });
+      var d = await r.json();
+      // Trust the server. If it says we are clear, let the person back in.
+      left = d.blocked ? (d.secondsLeft || 0) : 0;
+    } catch (e) { /* keep counting down locally if the check fails */ }
+    paint();
+  }
+
+  sync();
+  // Local 1s countdown for a live feel, re-synced with the server every 15s.
+  setInterval(function () { if (left > 0) { left -= 1; paint(); } }, 1000);
+  setInterval(sync, 15000);
+
   btn.addEventListener('click', function () { location.href = '/'; });
 </script>
 </body>
