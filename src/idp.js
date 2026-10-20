@@ -397,6 +397,13 @@ module.exports = function mountIdp(app, deps) {
   });
 
   app.post('/oauth/revoke', (req, res) => {
+    // RFC 7009 style: the token in the request body. Revoking only needs the
+    // token itself (holding it already lets you use it), and the answer is
+    // 200 whether or not it existed, so it reveals nothing.
+    if (!(req.get('Authorization') || '').startsWith('Bearer ') && req.body && req.body.token) {
+      db.prepare('UPDATE oauth_tokens SET revoked = 1 WHERE token_hash = ?').run(sha256(String(req.body.token)));
+      return res.json({ ok: true });
+    }
     const t = bearer(req, res);
     if (!t) return;
     db.prepare('UPDATE oauth_tokens SET revoked = 1 WHERE id = ?').run(t.id);

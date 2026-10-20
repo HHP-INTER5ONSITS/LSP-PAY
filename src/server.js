@@ -23,6 +23,9 @@ const DEFAULT_PIN = '00000';
 
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '32kb' }));
+// The OAuth spec (RFC 6749 §4.1.3) sends token requests as an HTML form, and
+// that's what standard client libraries do, so these endpoints accept both.
+app.use(['/oauth/token', '/oauth/revoke'], express.urlencoded({ extended: false, limit: '8kb' }));
 app.use(cookieParser());
 
 /* ---------------------------------------------------------------- helpers */
