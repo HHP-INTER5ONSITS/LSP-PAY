@@ -124,9 +124,33 @@ module.exports = function mountShield(app, deps) {
       at         INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_shield_ip ON shield_attempts(ip, at);
+
+    -- Failed security checks per address. Enough of them in a short window
+    -- earns a hard block: a real person fails the odd check, a bot fails
+    -- every one.
+    CREATE TABLE IF NOT EXISTS shield_strikes (
+      ip         TEXT NOT NULL,
+      at         INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_shield_strike ON shield_strikes(ip, at);
   `);
 
   const ipOf = (req) => (req.get('x-forwarded-for') || req.ip || '').split(',')[0].trim() || 'unknown';
+
+  // A hard block after this many failed checks in the window. The window is
+  // short and strikes age out of it, so a block lifts on its own — there is
+  // no list to maintain and an unlucky real person is not banned for good.
+  const STRIKE_WINDOW_MS = 15 * 60 * 1000;
+  const STRIKE_LIMIT = 8;
+
+  const strike = (ip) => db.prepare('INSERT INTO shield_strikes (ip, at) VALUES (?, ?)').run(ip, Date.now());
+
+  function isBlocked(ip) {
+    const n = db
+      .prepare('SELECT COUNT(*) n FROM shield_strikes WHERE ip = ? AND at > ?')
+      .get(ip, Date.now() - STRIKE_WINDOW_MS).n;
+    return n >= STRIKE_LIMIT;
+  }
 
   function recentAttempts(ip) {
     return db
@@ -209,21 +233,35 @@ module.exports = function mountShield(app, deps) {
   async function guard(req, res, next) {
     const ip = ipOf(req);
 
-    // A hidden field no person can see, let alone fill in.
+    // Already over the line: show the block, and record no new strike so the
+    // window can empty and the block lift by itself.
+    if (isBlocked(ip)) {
+      return res.status(429).json({ error: 'Access paused after too many failed security checks.', blocked: true });
+    }
+
+    // A hidden field no person can see, let alone fill in. A bot that trips
+    // it is answered as though it won — and quietly collects a strike.
     if (String(req.body?.website || '').trim()) {
       console.warn('[shield] honeypot filled from', ip);
-      // Answer as though it worked. A bot that knows it was caught adapts;
-      // one that thinks it succeeded keeps wasting its time.
+      strike(ip);
       return res.json({ ok: true, email: String(req.body?.email || ''), existing: false, delivered: true });
     }
 
     const problem = verify(req);
-    if (problem) return fail(res, 400, problem);
+    if (problem) {
+      strike(ip);
+      return res.status(isBlocked(ip) ? 429 : 400).json(
+        isBlocked(ip) ? { error: 'Access paused after too many failed security checks.', blocked: true } : { error: problem }
+      );
+    }
 
     if (turnstileOn()) {
       const out = await checkTurnstile(req.body?.turnstileToken, ip);
       if (!out.ok) {
         console.warn('[shield] turnstile refused', out.why, 'from', ip);
+        strike(ip);
+        if (isBlocked(ip))
+          return res.status(429).json({ error: 'Access paused after too many failed security checks.', blocked: true });
         // Say which of the two it was. A spent or stale token just needs a
         // reload; no token at all usually means the browser could not reach
         // Cloudflare, and that person needs to know it is not their fault.
@@ -249,7 +287,8 @@ module.exports = function mountShield(app, deps) {
     const now = Date.now();
     db.prepare('DELETE FROM shield_spent WHERE expires_at < ?').run(now);
     db.prepare('DELETE FROM shield_attempts WHERE at < ?').run(now - 24 * 60 * 60 * 1000);
+    db.prepare('DELETE FROM shield_strikes WHERE at < ?').run(now - 24 * 60 * 60 * 1000);
   }, 10 * 60 * 1000).unref();
 
-  return { guard, verify, emailAllowed, difficultyFor, ipOf, turnstileOn };
+  return { guard, verify, emailAllowed, difficultyFor, ipOf, turnstileOn, isBlocked };
 };

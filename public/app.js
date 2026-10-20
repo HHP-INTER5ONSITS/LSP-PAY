@@ -15,7 +15,11 @@ async function api(path, body) {
   });
   let data = {};
   try { data = await res.json(); } catch { /* empty body */ }
-  if (!res.ok) throw new Error(data.error || 'Something went wrong. Try again.');
+  if (!res.ok) {
+    const e = new Error(data.error || 'Something went wrong. Try again.');
+    if (data.blocked) e.blocked = true;
+    throw e;
+  }
   return data;
 }
 
@@ -248,6 +252,8 @@ async function requestLoginCode() {
     el('auth-code').focus();
     authMessage(out.devCode ? `Development mode: your code is ${out.devCode}` : out.note, !out.note);
   } catch (err) {
+    // A hard block is a full-page state, not an inline message.
+    if (err.blocked) { location.href = '/blocked'; return; }
     authMessage(err.message);
     resetTurnstile();   // a token is single use; a retry needs a fresh one
   } finally {

@@ -315,7 +315,9 @@ const codeLimiter = rateLimit({
     const e = normEmail(req.body && req.body.email);
     return e ? 'email:' + e : 'ip:' + req.ip;
   },
-  handler: limitJson('Too many code requests. Wait 15 minutes and try again.')
+  handler: (req, res) => res.status(429).json({
+    error: 'Access paused after too many sign-in attempts.', blocked: true
+  })
 });
 const payLimiter = rateLimit({
   windowMs: 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false,
@@ -1274,6 +1276,9 @@ app.get('/api/health', (req, res) => {
 // Hosted checkout and the developer docs are their own pages.
 app.get('/pay/:id', (req, res) =>
   res.sendFile(path.join(__dirname, '..', 'public', 'checkout.html'))
+);
+app.get('/blocked', (req, res) =>
+  res.sendFile(path.join(__dirname, '..', 'public', 'blocked.html'))
 );
 app.get('/developers', (req, res) =>
   res.sendFile(path.join(__dirname, '..', 'public', 'developers.html'))

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Access paused · LSP-Pay</title>
+<meta name="robots" content="noindex" />
+<meta name="theme-color" content="#0E0C1A" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+<link rel="icon" href="/logo.svg" />
+<script>
+  (function () { try { var s = localStorage.getItem('lsp-theme'); if (s) document.documentElement.setAttribute('data-theme', s); } catch (e) {} })();
+</script>
+<style>
+  .block { max-width: 460px; margin: 0 auto; padding: 72px 22px; text-align: center; }
+  .block-mark {
+    width: 72px; height: 72px; margin: 0 auto 24px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    border: 2px solid var(--coral);
+    color: var(--coral);
+  }
+  .block-mark svg { width: 34px; height: 34px; }
+  .block h1 { font-family: var(--serif); font-size: 32px; font-weight: 400; margin: 0 0 12px; line-height: 1.15; }
+  .block p { color: var(--mist); font-size: 15px; line-height: 1.7; margin: 0 0 14px; }
+  .block strong { color: var(--ivory); font-weight: 500; }
+  .countdown {
+    display: inline-block; margin: 8px 0 20px;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--serif); font-size: 26px; color: var(--brass);
+  }
+  .block .btn-primary { max-width: 260px; margin: 6px auto 0; }
+  .block-foot { margin-top: 26px; color: var(--mist); font-size: 12.5px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="block">
+  <div class="block-mark">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <circle cx="12" cy="12" r="9" /><path d="M8 12h8" />
+    </svg>
+  </div>
+
+  <h1>Access paused</h1>
+  <p>Too many security checks failed from your connection in a short time, so sign-in from here is paused for a few minutes.</p>
+  <p>If this was you — a flaky network or a blocked script can cause it — it clears on its own. Nothing is wrong with your account.</p>
+
+  <div class="countdown" id="count">15:00</div>
+  <div>
+    <button class="btn-primary" id="retry" disabled>Try again shortly</button>
+  </div>
+
+  <p class="block-foot">
+    Keeps happening? A browser extension or VPN may be blocking the check. Try another network, or sign in with GitHub or Google instead.
+  </p>
+</div>
+
+<script>
+  // A local, optimistic countdown. The real limit is enforced by the server;
+  // this is just so the page is not a dead end a person stares at.
+  var left = 15 * 60;
+  var el = document.getElementById('count');
+  var btn = document.getElementById('retry');
+  var t = setInterval(function () {
+    left -= 1;
+    if (left <= 0) {
+      clearInterval(t);
+      el.textContent = 'Ready';
+      btn.disabled = false;
+      btn.textContent = 'Back to sign in';
+      return;
+    }
+    var m = Math.floor(left / 60), s = left % 60;
+    el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+  }, 1000);
+  btn.addEventListener('click', function () { location.href = '/'; });
+</script>
+</body>
+</html>
