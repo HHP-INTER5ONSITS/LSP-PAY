@@ -1,0 +1,20 @@
+# Litestream keeps the SQLite database alive across Render deploys and restarts
+# by continuously replicating it to Cloudflare R2. On boot, scripts/start.sh
+# restores the latest copy from R2; while the app runs, every committed change
+# is streamed back to R2 within about a second. The app code is untouched — it
+# still reads and writes the same local SQLite file as before.
+#
+# Values in ${...} come from environment variables set in the Render dashboard:
+#   DB_PATH, R2_BUCKET, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+dbs:
+  - path: ${DB_PATH}
+    replicas:
+      - type: s3
+        bucket: ${R2_BUCKET}
+        path: lsp-pay.db
+        endpoint: ${R2_ENDPOINT}
+        region: auto
+        access-key-id: ${R2_ACCESS_KEY_ID}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY}
+        # Cloudflare R2 needs path-style bucket addressing.
+        force-path-style: true
