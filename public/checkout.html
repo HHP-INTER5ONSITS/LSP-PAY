@@ -38,6 +38,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const root = $('#root');
 const orderId = location.pathname.split('/').filter(Boolean).pop();
 let order = null, method = null, applied = null;
+// A merchant can open checkout on one method, e.g. ?method=wallet for "Pay with LSP-Pay".
+const PREFER = new URLSearchParams(location.search).get('method');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -129,6 +131,8 @@ function render() {
     $('#pay').disabled = false;
     $('#pay').textContent = method === 'cash' ? 'Choose cash' : `Pay ${$('#co-total').textContent}`;
 
+    if (method === 'wallet') await walletStatus();
+
     if (method === 'netbanking') {
       const { banks } = await api('/api/checkout/banks');
       $('[name=bank]').innerHTML = banks.map(b => `<option>${esc(b)}</option>`).join('');
@@ -139,6 +143,11 @@ function render() {
       e.addEventListener('input', () => { const d = e.value.replace(/\D/g,'').slice(0,4); e.value = d.length>2 ? d.slice(0,2)+'/'+d.slice(2) : d; });
     }
   }));
+
+  if (PREFER && m.methods.includes(PREFER)) {
+    const t = root.querySelector(`.tab[data-m="${PREFER}"]`);
+    if (t) t.click();
+  }
 
   $('#pay').addEventListener('click', async () => {
     const btn = $('#pay'), msg = $('#msg');
@@ -156,6 +165,39 @@ function render() {
   });
 }
 
+/**
+ * Wallet payments need an LSP-Pay session. Say up front who is paying and
+ * whether the balance covers it, instead of failing only after Pay is pressed.
+ */
+async function walletStatus() {
+  const box = document.createElement('div');
+  box.className = 'sheet-note';
+  $('#form').prepend(box);
+  let me = null;
+  try { me = (await api('/api/me')).user; } catch {}
+  if (method !== 'wallet') return; // they switched tabs while we were checking
+
+  if (!me) {
+    box.innerHTML = `You're not signed in to LSP-Pay on this browser.
+      <button class="btn-primary" id="wallet-signin" style="margin-top:10px">Sign in to LSP-Pay</button>`;
+    $('#pay').disabled = true;
+    $('#wallet-signin').addEventListener('click', () => {
+      // The LSP-Pay app sends people back here once they're signed in.
+      try { sessionStorage.setItem('lsp-after-auth', location.href); } catch {}
+      location.href = '/';
+    });
+    const pin = $('[name=pin]'); if (pin) pin.closest('label').hidden = true;
+    return;
+  }
+
+  const total = Number(String($('#co-total').textContent).replace(/[^0-9.]/g, '')) || 0;
+  const short = me.balance < total;
+  box.innerHTML = `Paying as <b>${esc(me.name)}</b> (${esc(me.email)}) · balance <b>${esc(me.balanceLabel)}</b>` +
+    (short ? `<br><span style="color:var(--coral)">That's not enough to pay ${esc($('#co-total').textContent)}. Choose another method or add money in LSP-Pay.</span>` : '');
+  if (short) $('#pay').disabled = true;
+  const pin = $('[name=pin]'); if (pin && !short) pin.focus();
+}
+
 function renderDone(out) {
   const cash = out.status === 'awaiting_cash';
   root.innerHTML = `
@@ -168,7 +210,7 @@ function renderDone(out) {
       ${out.authCode ? `<div class="kv"><span>Authorisation</span><span>${esc(out.authCode)}</span></div>` : ''}
       <div class="kv"><span>Status</span><span>${cash ? 'Awaiting cash' : 'Paid'}</span></div>
     </div>
-    <p class="co-foot">Keep this order number for your records.</p>`;
+    <p class="co-foot">${window.opener ? `You can close this tab and go back to ${esc(order.merchant.name)}. ` : ''}Keep this order number for your records.</p>`;
 }
 
 function renderClosed() {
