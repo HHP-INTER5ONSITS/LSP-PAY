@@ -395,6 +395,25 @@ function showWallet() {
   paintUser();
   loadHistory();
   refreshBell();
+
+  // A /to/<handle> deep link opens the pay sheet, prefilled.
+  const payTo = pendingPayTo();
+  if (payTo) {
+    history.replaceState({}, '', '/');
+    setTimeout(() => { sheetPayId().then(() => {
+      const box = document.querySelector('#sheet-body [name=handle]');
+      if (box) { box.value = payTo; box.dispatchEvent(new Event('input')); }
+    }); }, 300);
+  }
+
+  // Coming back from the card approval screen.
+  try {
+    if (new URLSearchParams(location.search).get('paid')) {
+      history.replaceState({}, '', location.pathname);
+      setTimeout(() => toast('Card payment approved.'), 400);
+    }
+  } catch { /* ignore */ }
+
   if (user.pinIsDefault) {
     setTimeout(() => toast('Your PIN is still 00000. Change it under Your account.'), 900);
   }
@@ -426,14 +445,17 @@ async function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, on
       <div class="summary-to">${escapeHtml(to)}</div>
     </div>
     ${sourcePicker}
-    <p class="sheet-note">Enter your 5-digit payment PIN.</p>
-    <div class="pin-dots">${'<span class="pin-dot"></span>'.repeat(5)}</div>
-    <div class="keypad">
-      ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button class="key" data-k="${n}">${n}</button>`).join('')}
-      <button class="key wide" data-k="clear">Clear</button>
-      <button class="key" data-k="0">0</button>
-      <button class="key wide" data-k="del">Delete</button>
+    <div id="pin-area">
+      <p class="sheet-note">Enter your 5-digit payment PIN.</p>
+      <div class="pin-dots">${'<span class="pin-dot"></span>'.repeat(5)}</div>
+      <div class="keypad">
+        ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button class="key" data-k="${n}">${n}</button>`).join('')}
+        <button class="key wide" data-k="clear">Clear</button>
+        <button class="key" data-k="0">0</button>
+        <button class="key wide" data-k="del">Delete</button>
+      </div>
     </div>
+    <p id="card-note" class="sheet-note" hidden>No PIN for cards — you approve this on the next screen.</p>
     <button id="pin-go" class="btn-primary" disabled>${escapeHtml(actionLabel)}</button>
     <p id="pin-msg" class="msg" hidden></p>`;
 
@@ -441,11 +463,25 @@ async function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, on
     const dots = root.querySelectorAll('.pin-dot');
     const go = $('#pin-go', root);
     const msg = $('#pin-msg', root);
+    const source = $('#source', root);
+    const pinArea = $('#pin-area', root);
+    const cardNote = $('#card-note', root);
+
+    const payingByCard = () => Boolean(source && source.value);
 
     const paint = () => {
-      dots.forEach((d, i) => d.classList.toggle('on', i < pin.length));
-      go.disabled = pin.length !== 5;
+      if (payingByCard()) {
+        pinArea.hidden = true; cardNote.hidden = false;
+        go.disabled = false; go.textContent = 'Continue to approve';
+      } else {
+        pinArea.hidden = false; cardNote.hidden = true;
+        go.textContent = actionLabel;
+        dots.forEach((d, i) => d.classList.toggle('on', i < pin.length));
+        go.disabled = pin.length !== 5;
+      }
     };
+
+    if (source) source.addEventListener('change', () => { pin = ''; paint(); });
 
     root.querySelectorAll('.key').forEach((key) =>
       key.addEventListener('click', () => {
@@ -459,6 +495,7 @@ async function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, on
 
     document.addEventListener('keydown', function onKey(e) {
       if (el('sheet').hidden) { document.removeEventListener('keydown', onKey); return; }
+      if (payingByCard()) return;
       if (/^\d$/.test(e.key) && pin.length < 5) pin += e.key;
       else if (e.key === 'Backspace') pin = pin.slice(0, -1);
       else if (e.key === 'Enter' && pin.length === 5) go.click();
@@ -470,8 +507,12 @@ async function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, on
       go.disabled = true;
       msg.hidden = true;
       try {
-        const source = $('#source', root);
-        const out = await submit(pin, source && source.value ? Number(source.value) : undefined);
+        const cardId = source && source.value ? Number(source.value) : undefined;
+        const out = await submit(payingByCard() ? null : pin, cardId);
+
+        // A card payment is not finished here — it goes to the approval screen.
+        if (out.needsApproval) { location.href = out.approveUrl; return; }
+
         user = out.user || user;
         paintUser();
         loadHistory();
@@ -483,6 +524,8 @@ async function confirmWithPin({ amountLabel, to, actionLabel = 'Pay', submit, on
         paint();
       }
     });
+
+    paint();
   });
 }
 
@@ -497,6 +540,107 @@ function showSuccess({ amountLabel, headline, rows, extraHtml = '' }) {
       <button class="btn-primary" style="margin-top:20px" onclick="document.getElementById('sheet-close').click()">Done</button>
     </div>`;
   openSheet('Payment successful', html);
+}
+
+/* ─────────────────────────────── pay IDs ──────────────────────────────── */
+
+async function sheetPayId() {
+  const [mine, offers] = await Promise.all([
+    api('/api/handle/me').catch(() => ({ handle: null })),
+    api('/api/handle/offers').catch(() => ({ incoming: [], outgoing: [] }))
+  ]);
+  const h = mine.handle;
+  const origin = location.origin;
+
+  openSheet('Pay IDs', `
+    ${offers.incoming.length ? `<h3 class="section-title" style="margin-top:0">Waiting for you to accept</h3>
+      <div class="picker">${offers.incoming.map((o) => `
+        <div class="pick" style="cursor:default">
+          <span><strong>${escapeHtml(o.amountLabel)} from ${escapeHtml(o.who)}</strong>
+            <small>${escapeHtml(o.note || 'No note')}</small></span>
+          <span style="display:flex;gap:10px">
+            <button class="btn-link" data-accept="${o.id}">Accept</button>
+            <button class="btn-link" data-decline="${o.id}">Decline</button>
+          </span></div>`).join('')}</div>` : ''}
+
+    <h3 class="section-title"${offers.incoming.length ? '' : ' style="margin-top:0"'}>Pay a pay ID</h3>
+    <p class="sheet-note">Enter someone's ID — like <strong>hhp</strong> — and any amount. They accept it to receive the money.</p>
+    <label class="field"><span>Pay ID</span>
+      <input name="handle" maxlength="20" placeholder="hhp" style="text-transform:lowercase" /></label>
+    ${amountField()}
+    <label class="field"><span>Note (optional)</span>
+      <input name="note" maxlength="80" placeholder="For lunch" /></label>
+    <button id="pay" class="btn-primary">Send payment</button>
+    <p id="msg" class="msg" hidden></p>
+
+    <h3 class="section-title">Your pay ID</h3>
+    ${h
+      ? `<div class="kv"><span>Your ID</span><span>@${escapeHtml(h.handle)}</span></div>
+         <div class="kv"><span>Accept automatically</span><span>${h.autoAccept ? 'On' : 'Off'}</span></div>
+         <p class="sheet-note">Share it anywhere: <strong>${escapeHtml(origin)}/to/${escapeHtml(h.handle)}</strong> or just the ID <strong>${escapeHtml(h.handle)}</strong>.</p>
+         <button id="auto" class="btn-quiet">${h.autoAccept ? 'Turn off auto-accept' : 'Turn on auto-accept'}</button>
+         <button id="rename" class="btn-quiet">Change my pay ID</button>`
+      : `<p class="sheet-note">You do not have a pay ID yet. Claim one so people can pay you with it.</p>
+         <button id="claim" class="btn-primary">Claim a pay ID</button>`}
+
+    ${offers.outgoing.length ? `<h3 class="section-title">Payments you sent</h3>
+      ${offers.outgoing.map((o) => `<div class="kv">
+        <span>${escapeHtml(o.amountLabel)} to ${escapeHtml(o.who)}</span>
+        <span>${escapeHtml(o.status)}${o.status === 'pending' ? ` · <a href="#" data-cancel="${o.id}" style="color:var(--brass)">cancel</a>` : ''}</span></div>`).join('')}` : ''}
+  `, (root) => {
+    $('#pay', root).addEventListener('click', async () => {
+      const f = readForm(root);
+      const handle = (f.handle || '').toLowerCase().replace(/^@/, '');
+      if (!handle) return toast('Enter a pay ID.', true);
+      if (!(Number(f.amount) > 0)) return toast('Enter an amount.', true);
+      try {
+        const out = await api('/api/handle/pay', { handle, amount: f.amount, note: f.note });
+        closeSheet();
+        if (out.settled) {
+          user = out.user; paintUser(); loadHistory();
+          toast(`${out.amountLabel} paid to @${handle}.`);
+        } else {
+          toast(`${out.amountLabel} sent to ${out.to}. They'll accept it to receive it.`);
+        }
+      } catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+
+    root.querySelectorAll('[data-accept]').forEach((b) => b.addEventListener('click', async () => {
+      try { const out = await api('/api/handle/offers/approve', { id: Number(b.dataset.accept) });
+        user = out.user; paintUser(); loadHistory(); toast('Payment accepted.'); sheetPayId();
+      } catch (err) { toast(err.message, true); }
+    }));
+    root.querySelectorAll('[data-decline]').forEach((b) => b.addEventListener('click', async () => {
+      await api('/api/handle/offers/decline', { id: Number(b.dataset.decline) }); toast('Declined.'); sheetPayId();
+    }));
+    root.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', async (e) => {
+      e.preventDefault(); await api('/api/handle/offers/cancel', { id: Number(b.dataset.cancel) }); toast('Cancelled.'); sheetPayId();
+    }));
+
+    $('#auto', root)?.addEventListener('click', async () => {
+      await api('/api/handle/auto', { on: !h.autoAccept }); sheetPayId();
+    });
+    $('#claim', root)?.addEventListener('click', () => sheetClaimHandle());
+    $('#rename', root)?.addEventListener('click', () => sheetClaimHandle(h.handle));
+  });
+}
+
+function sheetClaimHandle(current) {
+  openSheet(current ? 'Change your pay ID' : 'Claim a pay ID', `
+    <p class="sheet-note">3 to 20 characters: letters, numbers or underscore. People will pay you with it, so keep it short and memorable.</p>
+    <label class="field"><span>Pay ID</span>
+      <input name="handle" maxlength="20" value="${escapeHtml(current || '')}" placeholder="hhp" style="text-transform:lowercase" /></label>
+    <button id="go" class="btn-primary">${current ? 'Save' : 'Claim it'}</button>
+    <p id="msg" class="msg" hidden></p>
+  `, (root) => {
+    $('#go', root).addEventListener('click', async () => {
+      const handle = (readForm(root).handle || '').toLowerCase().replace(/^@/, '');
+      try {
+        await api('/api/handle/claim', { handle });
+        closeSheet(); toast(`Your pay ID is @${handle}.`); sheetPayId();
+      } catch (err) { const m = $('#msg', root); m.textContent = err.message; m.hidden = false; }
+    });
+  });
 }
 
 /* ───────────────────────────── amount helper ──────────────────────────── */
@@ -1887,6 +2031,7 @@ const SHEETS = {
   cards: sheetCards,
   business: sheetBusiness,
   request: sheetRequest,
+  payid: sheetPayId,
   insights: sheetInsights,
   scheduled: sheetScheduled,
   bank: sheetBank,
@@ -1904,6 +2049,12 @@ document.querySelectorAll('[data-open]').forEach((b) =>
 el('btn-bell').addEventListener('click', sheetNotifications);
 ['tx-search', 'tx-filter'].forEach((id) => el(id)?.addEventListener('input', paintHistory));
 el('tx-export')?.addEventListener('click', () => window.open('/api/statement.csv', '_blank'));
+
+// A /to/<handle> deep link: remember it and open the pay sheet once in.
+function pendingPayTo() {
+  const m = location.pathname.match(/^\/to\/([a-z0-9_]{3,20})$/i);
+  return m ? m[1].toLowerCase() : null;
+}
 
 (async function boot() {
   try {

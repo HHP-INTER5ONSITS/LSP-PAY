@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Approve payment · LSP-Pay</title>
+<meta name="robots" content="noindex" />
+<meta name="theme-color" content="#0E0C1A" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+<link rel="icon" href="/logo.svg" />
+<script>
+  (function () { try { var s = localStorage.getItem('lsp-theme'); if (s) document.documentElement.setAttribute('data-theme', s); } catch (e) {} })();
+</script>
+<style>
+  .ap { max-width: 440px; margin: 0 auto; padding: 48px 22px 60px; }
+  .ap-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 30px; }
+  .ap-brand .wordmark { font-size: 24px; }
+  .ap-card { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 26px 22px; box-shadow: var(--shadow); }
+  .ap-amount { font-family: var(--serif); font-size: 46px; line-height: 1; margin-bottom: 6px; }
+  .ap-to { color: var(--mist); font-size: 14.5px; line-height: 1.6; margin: 0 0 18px; }
+  .ap-row { display: flex; justify-content: space-between; gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  .ap-row span:first-child { color: var(--mist); }
+  .ap-note { margin: 20px 0 0; color: var(--mist); font-size: 13px; line-height: 1.65; }
+  .state { text-align: center; padding: 60px 20px; color: var(--mist); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="ap" id="root"><p class="state">Loading…</p></div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const root = $('#root');
+const id = new URLSearchParams(location.search).get('intent');
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  let d = {}; try { d = await res.json(); } catch {}
+  if (!res.ok) throw new Error(d.error || 'Something went wrong.');
+  return d;
+}
+
+(async function () {
+  if (!id) { root.innerHTML = '<p class="state">No payment to approve.</p>'; return; }
+
+  let d;
+  try { d = await api('/api/pay/intent/' + id); }
+  catch (err) {
+    root.innerHTML = `<p class="state">${esc(err.message)}<br><br>
+      <a href="/" style="color:var(--brass)">Back to LSP-Pay</a></p>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="ap-brand"><span class="wordmark">LSP&#8209;Pay</span></div>
+    <div class="ap-card">
+      <h1 style="font-family:var(--serif);font-weight:400;font-size:21px;margin:0 0 18px">Approve this payment</h1>
+      <div class="ap-amount">${esc(d.amountLabel)}</div>
+      <p class="ap-to">${esc(d.title)}${d.detail ? '<br>' + esc(d.detail) : ''}</p>
+      <div class="ap-row"><span>Paying with</span><span>${esc(d.card || 'Card')}</span></div>
+      <button id="approve" class="btn-primary" style="margin-top:20px">Approve ${esc(d.amountLabel)}</button>
+      <button id="cancel" class="btn-quiet">Cancel</button>
+      <p id="msg" class="msg" hidden></p>
+      <p class="ap-note">You are approving this card payment in place of a PIN. Only you, signed in, can approve it.</p>
+    </div>`;
+
+  $('#approve').addEventListener('click', async () => {
+    const btn = $('#approve'); btn.disabled = true; $('#msg').hidden = true;
+    try {
+      await api('/api/pay/intent/' + id + '/approve', {});
+      // Back to the wallet, which shows the receipt.
+      location.href = '/?paid=1';
+    } catch (err) {
+      $('#msg').textContent = err.message; $('#msg').hidden = false; btn.disabled = false;
+    }
+  });
+
+  $('#cancel').addEventListener('click', async () => {
+    try { await api('/api/pay/intent/' + id + '/cancel', {}); } catch {}
+    location.href = '/';
+  });
+})();
+</script>
+</body>
+</html>

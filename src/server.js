@@ -252,42 +252,44 @@ function amountCheck(raw, { min = 1, max = 200000 } = {}) {
   return { ok: true, amountP: p };
 }
 
-async function runPayment(req, res, { amountP, kind, title, detail, payee, payeeTitle, receiptTitle }) {
-  const pinResult = checkPin(req.user, req.body.pin);
-  if (!pinResult.ok) return fail(res, 403, pinResult.message);
-
-  // A self-imposed daily cap. Card payments count too — the point is to
-  // limit spending, not just wallet drawdown.
-  if (req.user.daily_limit_p) {
-    const already = spentToday(req.user.id);
-    if (already + amountP > req.user.daily_limit_p)
-      return fail(res, 403, `That would pass your daily limit of ${inr(req.user.daily_limit_p)}. You have ${inr(Math.max(0, req.user.daily_limit_p - already))} left today.`);
+/**
+ * Moves the money for a prepared payment. No PIN and no HTTP here — the
+ * caller decides how it was authorised (a PIN for the wallet, the approval
+ * screen for a card). Returns a result object, or { error } to report.
+ *
+ * spec: { amountP, kind, title, detail, payeeId?, payeeTitle?, receiptTitle?, cardId? }
+ */
+function executePayment(user, spec) {
+  if (user.daily_limit_p) {
+    const already = spentToday(user.id);
+    if (already + spec.amountP > user.daily_limit_p)
+      return { error: `That would pass your daily limit of ${inr(user.daily_limit_p)}. You have ${inr(Math.max(0, user.daily_limit_p - already))} left today.` };
   }
 
-  // Optional: pay straight from a saved card instead of the wallet.
   let card = null;
-  if (req.body.cardId) {
-    card = findCard.get(Number(req.body.cardId), req.user.id);
-    if (!card) return fail(res, 404, 'That card is not on your account.');
-
-    const auth = cards.authorise(card, amountP);
-    if (!auth.ok) return fail(res, 402, auth.message);
-
+  let detail = spec.detail;
+  if (spec.cardId) {
+    card = findCard.get(Number(spec.cardId), user.id);
+    if (!card) return { error: 'That card is not on your account.' };
+    const auth = cards.authorise(card, spec.amountP);
+    if (!auth.ok) return { error: auth.message, status: 402 };
     detail = [detail, `Paid by ${cards.describe(card)} · ${auth.authCode}`].filter(Boolean).join(' · ');
   }
 
+  const payee = spec.payeeId ? findUserById.get(spec.payeeId) : null;
+
   let out;
   try {
-    out = settle(req.user, { amountP, kind, title, detail, payee, payeeTitle, card });
+    out = settle(user, { amountP: spec.amountP, kind: spec.kind, title: spec.title, detail, payee, payeeTitle: spec.payeeTitle, card });
   } catch (err) {
-    if (err.message === 'INSUFFICIENT') return fail(res, 400, 'Not enough balance for this payment.');
+    if (err.message === 'INSUFFICIENT') return { error: 'Not enough balance for this payment.' };
     throw err;
   }
 
   mail
-    .sendReceipt(req.user.email, {
-      title: receiptTitle || title,
-      amountLabel: inr(amountP),
+    .sendReceipt(user.email, {
+      title: spec.receiptTitle || spec.title,
+      amountLabel: inr(spec.amountP),
       reference: out.reference,
       detail,
       balanceLabel: inr(out.balance_p),
@@ -295,16 +297,93 @@ async function runPayment(req, res, { amountP, kind, title, detail, payee, payee
     })
     .catch((e) => console.error('[mail] receipt failed:', e.message));
 
-  return res.json({
+  return {
     ok: true,
     reference: out.reference,
-    amountLabel: inr(amountP),
+    amountLabel: inr(spec.amountP),
     points: out.points,
-    title,
+    title: spec.title,
     detail,
-    user: publicUser(findUserById.get(req.user.id))
-  });
+    user: publicUser(findUserById.get(user.id))
+  };
 }
+
+async function runPayment(req, res, { amountP, kind, title, detail, payee, payeeTitle, receiptTitle }) {
+  const spec = {
+    amountP, kind, title, detail,
+    payeeId: payee ? payee.id : null, payeeTitle, receiptTitle
+  };
+
+  // Paying by card: no PIN. Stash the payment and send them to the approval
+  // screen, the way a card redirect (or an OAuth consent) works.
+  if (req.body.cardId) {
+    const card = findCard.get(Number(req.body.cardId), req.user.id);
+    if (!card) return fail(res, 404, 'That card is not on your account.');
+    const id = createPayIntent(req.user.id, { ...spec, cardId: card.id });
+    return res.json({ needsApproval: true, approveUrl: `/approve-payment?intent=${id}` });
+  }
+
+  // Paying from the wallet: the PIN authorises it.
+  const pinResult = checkPin(req.user, req.body.pin);
+  if (!pinResult.ok) return fail(res, 403, pinResult.message);
+
+  const r = executePayment(req.user, spec);
+  if (r.error) return fail(res, r.status || 400, r.error);
+  return res.json(r);
+}
+
+/* --------------------------------------------- card approval intents */
+
+const INTENT_TTL_MS = 15 * 60 * 1000;
+
+function createPayIntent(userId, spec) {
+  const id = 'pint_' + crypto.randomBytes(10).toString('hex');
+  db.prepare('INSERT INTO pay_intents (id, user_id, spec, expires_at) VALUES (?, ?, ?, ?)')
+    .run(id, userId, JSON.stringify(spec), Date.now() + INTENT_TTL_MS);
+  return id;
+}
+
+app.get('/approve-payment', (req, res) =>
+  res.sendFile(path.join(__dirname, '..', 'public', 'approve-payment.html'))
+);
+
+/** The approval screen asks what it is approving. */
+app.get('/api/pay/intent/:id', auth, (req, res) => {
+  const row = db.prepare('SELECT * FROM pay_intents WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!row) return fail(res, 404, 'That payment request was not found.');
+  if (row.status !== 'pending') return fail(res, 410, 'That payment request is no longer open.');
+  if (Date.now() > row.expires_at) return fail(res, 410, 'That payment request expired. Start it again.');
+
+  const spec = JSON.parse(row.spec);
+  const card = spec.cardId ? findCard.get(spec.cardId, req.user.id) : null;
+  res.json({
+    amountLabel: inr(spec.amountP),
+    title: spec.title,
+    detail: spec.detail || null,
+    card: card ? cards.describe(card) : null
+  });
+});
+
+app.post('/api/pay/intent/:id/approve', auth, (req, res) => {
+  const row = db.prepare('SELECT * FROM pay_intents WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!row) return fail(res, 404, 'That payment request was not found.');
+  if (row.status !== 'pending') return fail(res, 410, 'That payment request is no longer open.');
+  if (Date.now() > row.expires_at) return fail(res, 410, 'That payment request expired. Start it again.');
+
+  const r = executePayment(req.user, JSON.parse(row.spec));
+  if (r.error) {
+    // A declined card or no funds: leave the intent open so they can fix it.
+    return fail(res, r.status || 400, r.error);
+  }
+  db.prepare("UPDATE pay_intents SET status = 'done' WHERE id = ?").run(row.id);
+  res.json(r);
+});
+
+app.post('/api/pay/intent/:id/cancel', auth, (req, res) => {
+  db.prepare("UPDATE pay_intents SET status = 'cancelled' WHERE id = ? AND user_id = ? AND status = 'pending'")
+    .run(req.params.id, req.user.id);
+  res.json({ ok: true });
+});
 
 /* ------------------------------------------------------------ rate limits */
 
@@ -897,6 +976,162 @@ app.post('/api/requests/decline', auth, (req, res) => {
   res.json({ ok: true });
 });
 
+/* -------------------------------------------------- pay handles (UPI IDs) */
+
+const HANDLE_RE = /^[a-z0-9_]{3,20}$/;
+const findHandle = db.prepare('SELECT * FROM pay_handles WHERE handle = ?');
+const myHandle = db.prepare('SELECT * FROM pay_handles WHERE user_id = ?');
+
+function publicHandle(h) {
+  return h ? { handle: h.handle, autoAccept: !!h.auto_accept } : null;
+}
+
+app.get('/api/handle/me', auth, (req, res) => {
+  res.json({ handle: publicHandle(myHandle.get(req.user.id)) });
+});
+
+/** Claim or change your handle. Lowercased; letters, digits, underscore. */
+app.post('/api/handle/claim', auth, (req, res) => {
+  const handle = String(req.body.handle || '').trim().toLowerCase();
+  if (!HANDLE_RE.test(handle))
+    return fail(res, 400, 'A pay ID is 3 to 20 characters: letters, numbers or underscore.');
+
+  const taken = findHandle.get(handle);
+  if (taken && taken.user_id !== req.user.id) return fail(res, 400, 'That pay ID is already taken.');
+
+  db.prepare(
+    `INSERT INTO pay_handles (user_id, handle) VALUES (?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET handle = excluded.handle`
+  ).run(req.user.id, handle);
+
+  res.json({ ok: true, handle: publicHandle(myHandle.get(req.user.id)) });
+});
+
+app.post('/api/handle/auto', auth, (req, res) => {
+  const h = myHandle.get(req.user.id);
+  if (!h) return fail(res, 400, 'Claim a pay ID first.');
+  db.prepare('UPDATE pay_handles SET auto_accept = ? WHERE user_id = ?').run(req.body.on ? 1 : 0, req.user.id);
+  res.json({ ok: true, handle: publicHandle(myHandle.get(req.user.id)) });
+});
+
+/** Resolve a handle to a display name, so the payer sees who they're paying. */
+app.get('/api/handle/resolve', auth, (req, res) => {
+  const h = findHandle.get(String(req.query.handle || '').trim().toLowerCase());
+  if (!h) return fail(res, 404, 'No one uses that pay ID.');
+  const owner = findUserById.get(h.user_id);
+  res.json({ handle: h.handle, name: owner.display_name || owner.handle, self: owner.id === req.user.id });
+});
+
+/**
+ * Pay a handle. The receiver approves before the money moves — unless they
+ * turned on auto-accept, in which case it settles at once. From the wallet;
+ * a handle is wallet-to-wallet, like UPI.
+ */
+app.post('/api/handle/pay', auth, payLimiter, (req, res) => {
+  const h = findHandle.get(String(req.body.handle || '').trim().toLowerCase());
+  if (!h) return fail(res, 404, 'No one uses that pay ID.');
+  if (h.user_id === req.user.id) return fail(res, 400, 'That is your own pay ID.');
+
+  const amt = amountCheck(req.body.amount);
+  if (!amt.ok) return fail(res, 400, amt.message);
+
+  const note = String(req.body.note || '').slice(0, 80) || null;
+  const receiver = findUserById.get(h.user_id);
+
+  // The payer's own daily limit still applies.
+  if (req.user.daily_limit_p && spentToday(req.user.id) + amt.amountP > req.user.daily_limit_p)
+    return fail(res, 403, `That would pass your daily limit of ${inr(req.user.daily_limit_p)}.`);
+
+  if (h.auto_accept) {
+    const fresh = findUserById.get(req.user.id);
+    if (fresh.balance_p < amt.amountP) return fail(res, 400, 'Not enough balance for this payment.');
+    try {
+      const out = settle(req.user, {
+        amountP: amt.amountP, kind: 'send',
+        title: `Paid @${h.handle}`, detail: note,
+        payee: receiver, payeeTitle: `Received from ${req.user.display_name || req.user.handle}`
+      });
+      notify(receiver.id, `${req.user.display_name || req.user.handle} paid you`, inr(amt.amountP));
+      return res.json({ ok: true, settled: true, reference: out.reference, amountLabel: inr(amt.amountP),
+        user: publicUser(findUserById.get(req.user.id)) });
+    } catch (err) {
+      if (err.message === 'INSUFFICIENT') return fail(res, 400, 'Not enough balance for this payment.');
+      throw err;
+    }
+  }
+
+  // Otherwise it waits for the receiver.
+  db.prepare('INSERT INTO handle_offers (payer_id, receiver_id, amount_p, note) VALUES (?, ?, ?, ?)')
+    .run(req.user.id, receiver.id, amt.amountP, note);
+  notify(receiver.id, `${req.user.display_name || req.user.handle} wants to pay you ${inr(amt.amountP)}`,
+    `To @${h.handle}${note ? ' · ' + note : ''}. Approve it to receive the money.`);
+
+  res.json({ ok: true, settled: false, amountLabel: inr(amt.amountP), to: receiver.display_name || receiver.handle });
+});
+
+app.get('/api/handle/offers', auth, (req, res) => {
+  const shape = (o, who) => ({
+    id: o.id, amountLabel: inr(o.amount_p), amount: o.amount_p / 100,
+    note: o.note, status: o.status, who, createdAt: o.created_at
+  });
+  const incoming = db.prepare(
+    `SELECT o.*, u.display_name, u.handle FROM handle_offers o JOIN users u ON u.id = o.payer_id
+     WHERE o.receiver_id = ? AND o.status = 'pending' ORDER BY o.id DESC LIMIT 30`
+  ).all(req.user.id).map((o) => shape(o, o.display_name || o.handle));
+  const outgoing = db.prepare(
+    `SELECT o.*, u.display_name, u.handle FROM handle_offers o JOIN users u ON u.id = o.receiver_id
+     WHERE o.payer_id = ? ORDER BY o.id DESC LIMIT 30`
+  ).all(req.user.id).map((o) => shape(o, o.display_name || o.handle));
+  res.json({ incoming, outgoing });
+});
+
+/** Receiver accepts: the money moves from the payer now. */
+app.post('/api/handle/offers/approve', auth, payLimiter, (req, res) => {
+  const o = db.prepare("SELECT * FROM handle_offers WHERE id = ? AND receiver_id = ? AND status = 'pending'")
+    .get(Number(req.body.id), req.user.id);
+  if (!o) return fail(res, 404, 'No such pending offer.');
+
+  const payer = findUserById.get(o.payer_id);
+  if (!payer) { db.prepare("UPDATE handle_offers SET status = 'failed' WHERE id = ?").run(o.id); return fail(res, 400, 'The payer account no longer exists.'); }
+
+  const fresh = findUserById.get(payer.id);
+  if (fresh.balance_p < o.amount_p) {
+    db.prepare("UPDATE handle_offers SET status = 'failed' WHERE id = ?").run(o.id);
+    notify(payer.id, 'A payment you offered could not be completed', `${inr(o.amount_p)} — not enough balance when it was approved.`);
+    return fail(res, 400, 'The payer no longer has enough balance.');
+  }
+
+  try {
+    settle(payer, {
+      amountP: o.amount_p, kind: 'send',
+      title: `Paid ${req.user.display_name || req.user.handle}`, detail: o.note,
+      payee: req.user, payeeTitle: `Received from ${payer.display_name || payer.handle}`
+    });
+  } catch (err) {
+    if (err.message === 'INSUFFICIENT') { db.prepare("UPDATE handle_offers SET status = 'failed' WHERE id = ?").run(o.id); return fail(res, 400, 'The payer no longer has enough balance.'); }
+    throw err;
+  }
+
+  db.prepare("UPDATE handle_offers SET status = 'paid' WHERE id = ?").run(o.id);
+  notify(payer.id, `${req.user.display_name || req.user.handle} accepted your payment`, inr(o.amount_p));
+  res.json({ ok: true, user: publicUser(findUserById.get(req.user.id)) });
+});
+
+app.post('/api/handle/offers/decline', auth, (req, res) => {
+  const o = db.prepare("SELECT * FROM handle_offers WHERE id = ? AND receiver_id = ? AND status = 'pending'")
+    .get(Number(req.body.id), req.user.id);
+  if (!o) return fail(res, 404, 'No such pending offer.');
+  db.prepare("UPDATE handle_offers SET status = 'declined' WHERE id = ?").run(o.id);
+  notify(o.payer_id, 'Your payment offer was declined', inr(o.amount_p));
+  res.json({ ok: true });
+});
+
+app.post('/api/handle/offers/cancel', auth, (req, res) => {
+  db.prepare("UPDATE handle_offers SET status = 'cancelled' WHERE id = ? AND payer_id = ? AND status = 'pending'")
+    .run(Number(req.body.id), req.user.id);
+  res.json({ ok: true });
+});
+
 /* ---------------------------------------------------- saved payees (1) */
 
 app.get('/api/payees', auth, (req, res) => {
@@ -1282,6 +1517,9 @@ app.get('/pay/:id', (req, res) =>
 );
 app.get('/blocked', (req, res) =>
   res.sendFile(path.join(__dirname, '..', 'public', 'blocked.html'))
+);
+app.get(/^\/to\/[a-zA-Z0-9_]{3,20}$/, (req, res) =>
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'))
 );
 app.get('/developers', (req, res) =>
   res.sendFile(path.join(__dirname, '..', 'public', 'developers.html'))

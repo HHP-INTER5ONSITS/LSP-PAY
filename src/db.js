@@ -280,6 +280,39 @@ CREATE TABLE IF NOT EXISTS logins (
 );
 CREATE INDEX IF NOT EXISTS idx_logins_user ON logins(user_id, id DESC);
 
+-- A public pay handle, like a UPI ID. Share it anywhere; anyone pays it.
+CREATE TABLE IF NOT EXISTS pay_handles (
+  user_id      INTEGER NOT NULL UNIQUE REFERENCES users(id),
+  handle       TEXT NOT NULL UNIQUE,
+  auto_accept  INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- A payment offered to a handle's owner, who accepts or declines (unless
+-- they have auto-accept on, in which case it settles at once).
+CREATE TABLE IF NOT EXISTS handle_offers (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  payer_id     INTEGER NOT NULL REFERENCES users(id),
+  receiver_id  INTEGER NOT NULL REFERENCES users(id),
+  amount_p     INTEGER NOT NULL,
+  note         TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | declined | cancelled | failed
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_offers_recv ON handle_offers(receiver_id, status);
+CREATE INDEX IF NOT EXISTS idx_offers_payer ON handle_offers(payer_id, status);
+
+-- A card payment waiting to be approved on the redirect screen. No PIN:
+-- the person authorises it there instead, the way an OAuth consent works.
+CREATE TABLE IF NOT EXISTS pay_intents (
+  id           TEXT PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  spec         TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- pending | done | cancelled
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS gift_cards (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   code           TEXT NOT NULL UNIQUE,
