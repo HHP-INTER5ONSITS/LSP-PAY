@@ -32,7 +32,11 @@ if [ -z "$MISSING" ]; then
   "$LITESTREAM" restore -if-replica-exists -config ./litestream.yml -o "$DB_PATH" "$DB_PATH" || true
   echo "[start] Launching app under Litestream replication…"
   exec "$LITESTREAM" replicate -config ./litestream.yml -exec "node src/server.js"
+elif [ -n "${MONGODB_URI:-}" ]; then
+  echo "[start] Saving the database to MongoDB (MONGODB_URI is set)."
+  exec node src/boot.js
 else
-  echo "[start] Litestream not configured — running without persistence. Missing:${MISSING%,}"
+  echo "[start] No persistence configured — the database resets on every deploy and restart."
+  echo "[start] To keep it, set MONGODB_URI, or all of:${MISSING%,}"
   exec node src/server.js
 fi
