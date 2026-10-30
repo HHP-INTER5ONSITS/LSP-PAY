@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "sh scripts/start.sh",
+    "postinstall": "sh scripts/install-litestream.sh || true",
     "dev": "node --watch src/server.js"
   },
   "dependencies": {

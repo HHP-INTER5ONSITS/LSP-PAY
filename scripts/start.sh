@@ -20,12 +20,19 @@ export DB_PATH="$DATA_DIR/lsp-pay.db"
 
 LITESTREAM="./bin/litestream"
 
-if [ -x "$LITESTREAM" ] && [ -n "$R2_BUCKET" ] && [ -n "$R2_ACCESS_KEY_ID" ]; then
+MISSING=""
+[ -x "$LITESTREAM" ] || MISSING="$MISSING the Litestream program (bin/litestream, installed by npm install),"
+for v in R2_BUCKET R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+  eval "val=\${$v:-}"
+  [ -n "$val" ] || MISSING="$MISSING $v,"
+done
+
+if [ -z "$MISSING" ]; then
   echo "[start] Litestream on. Restoring database from R2 if a backup exists…"
   "$LITESTREAM" restore -if-replica-exists -config ./litestream.yml -o "$DB_PATH" "$DB_PATH" || true
   echo "[start] Launching app under Litestream replication…"
   exec "$LITESTREAM" replicate -config ./litestream.yml -exec "node src/server.js"
 else
-  echo "[start] Litestream not configured (binary or R2 env vars missing) — running without persistence."
+  echo "[start] Litestream not configured — running without persistence. Missing:${MISSING%,}"
   exec node src/server.js
 fi
